@@ -82,11 +82,30 @@ The prompt reflects the same principle: a child whose mother is unknown reads as
 
 ## Install
 
-1. Build the ESP — **required, and the only manual step**. See
-   [`docs/BUILD_PLUGIN.md`](docs/BUILD_PLUGIN.md). One quest, one alias, no
-   masters beyond vanilla, about ten minutes in the Creation Kit.
-2. Everything else is already deployed by `tools\deploy.ps1`.
-3. **Restart the game fully.** A save reload reuses cached scripts.
+Install the archive from
+[Releases](https://github.com/deadohiosky48/SkyrimNet-Kinship/releases) with a
+mod manager, then **restart the game fully** — a save reload reuses cached
+scripts and will run the old ones.
+
+The archive is complete: the ESP is prebuilt and ESL-flagged, and the optional
+SKSE panel is included. There is no manual build step.
+
+### Requirements
+
+| | |
+|---|---|
+| **SKSE64** | required |
+| **PapyrusUtil SE** | required — `StorageUtil`, `JsonUtil` and `MiscUtil` are the entire storage layer |
+| **SkyrimNet** | required in practice; this mod exists to feed it |
+| **Fertility Mode Reloaded** | soft — without it the plugin loads inert, the decorator answers `known:0`, and nothing errors |
+| **SKSE Menu Framework** | optional — only for the F1 management panel. Without it the in-game picker still works |
+
+### Building from source
+
+Different path, and the ESP does have to be built by hand: see
+[`docs/BUILD_PLUGIN.md`](docs/BUILD_PLUGIN.md) (about ten minutes in the
+Creation Kit — one quest, one alias, no masters beyond vanilla) and
+[`docs/BUILD_DLL.md`](docs/BUILD_DLL.md) for the panel.
 
 ---
 
