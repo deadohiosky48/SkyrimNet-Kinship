@@ -1,6 +1,6 @@
 plugin:
   name: "SkyrimNet Kinship"
-  version: "1.0.0"
+  version: "1.1.0"
   description: "Makes parentage from Fertility Mode Reloaded permanent and visible to SkyrimNet — a child knows who its parents are, and a mother never forgets the child she bore."
   icon: "🍼"
 

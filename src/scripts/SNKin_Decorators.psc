@@ -54,6 +54,9 @@ String Function GetKinship(Actor akActor) Global
         Int idx = JsonUtil.GetIntValue(SNKin_Bridge.StoreFile(), \
             "ref." + akActor.GetFormID() + ".child", -1)
         If idx >= 0
+            ; Publish the Papyrus flag while we are here - see MarkChildActor.
+            ; This is the only place most children are ever seen as an actor.
+            SNKin_Bridge.MarkChildActor(akActor, idx)
             Return ChildPayload(idx)
         EndIf
     EndIf
@@ -91,12 +94,23 @@ String Function GetKinship(Actor akActor) Global
     ; excluded. Without that guard this would misattribute parentage to
     ; strangers on a name collision.
     ;
-    ; Deliberately NOT persisted. Writing a binding from a decorator would make
-    ; a read path mutate state during a prompt render; the lookup is one
-    ; StringListFind and is cheap enough to repeat.
+    ; THE BINDING is still deliberately not persisted here - writing one from a
+    ; read path would mutate state during a prompt render, and the lookup is one
+    ; StringListFind and cheap enough to repeat.
+    ;
+    ; THE EXPORTED FLAG IS DIFFERENT, and the reason is that it stopped being
+    ; ours. SNKin_IsPlayerChild is a contract other mods gate romance on, and
+    ; this is the only place most children are ever seen as an actor at all -
+    ; the sweep reached 2 of 32 on the development save. A guard that answers
+    ; "not the player's child" for Toryy is not a cheap read, it is a wrong one.
+    ;
+    ; Bounded, unlike a binding: MarkChildActor writes one StorageUtil Int, and
+    ; touches the store only the first time a given child resolves to a given
+    ; reference.
     If SNKin_Bridge.IsDynamicRef(akActor.GetFormID())
         Int byName = SNKin_Bridge.ChildIndex(akActor.GetDisplayName())
         If byName >= 0
+            SNKin_Bridge.MarkChildActor(akActor, byName)
             Return ChildPayload(byName)
         EndIf
     EndIf
@@ -205,15 +219,24 @@ String Function IsChildOfPlayer(Actor akActor) Global
       "1" or "0" - see the note at the top about Bool-returning decorators.
 
       Must apply BOTH tests GetKinship applies, or an unbound small child reads
-      as "not a child" here while rendering a full parentage block there. }
+      as "not a child" here while rendering a full parentage block there.
+
+      AND the tombstone test, which this used to miss: ChildPayload returns
+      Unknown for a hidden record, so get_kinship called a forgotten child a
+      stranger while this one still called it a child. Same question, two
+      answers, and a prompt could hold both at once. }
     If akActor == None
         Return "0"
     EndIf
-    If StorageUtil.GetIntValue(akActor, "SNKin_Bound", 0) == 1
-        Return "1"
+    Int idx = JsonUtil.GetIntValue(SNKin_Bridge.StoreFile(), \
+        "ref." + akActor.GetFormID() + ".child", -1)
+    If idx < 0 && SNKin_Bridge.IsDynamicRef(akActor.GetFormID())
+        idx = SNKin_Bridge.ChildIndex(akActor.GetDisplayName())
     EndIf
-    If SNKin_Bridge.IsDynamicRef(akActor.GetFormID()) && \
-       SNKin_Bridge.ChildIndex(akActor.GetDisplayName()) >= 0
+    ; MarkChildActor applies the same tombstone test and returns False when it
+    ; declines, so this is one call rather than a check and a call that could
+    ; drift apart.
+    If SNKin_Bridge.MarkChildActor(akActor, idx)
         Return "1"
     EndIf
     Return "0"

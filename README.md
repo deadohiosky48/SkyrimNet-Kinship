@@ -244,6 +244,83 @@ blank because of the `default()` guards.
 
 ---
 
+## The Papyrus contract
+
+Decorators are prompt-side, and **Papyrus cannot call them**. A mod gating a
+quest, a spark or a dialogue branch needs an answer before any prompt exists, so
+three `StorageUtil` keys are published for that:
+
+| Key | Scope | Meaning |
+|---|---|---|
+| `SNKin_IsPlayerChild` | per actor | `1` if this actor is one of the player's children |
+| `SNKin_ChildrenByPlayer` | per actor | non-hidden children this actor co-parents with the player |
+| `SNKin_PlayerChildTotal` | global (`None`) | non-hidden children on the roster |
+
+```papyrus
+If StorageUtil.GetIntValue(akActor, "SNKin_IsPlayerChild", 0) == 1
+    Return    ; never romance the player's own child
+EndIf
+```
+
+**No compile-time dependency.** Absent this mod the keys are absent, every read
+returns its default, and the guard is inert.
+
+**Ints, never Strings** — StorageUtil Strings do not survive a save reload.
+
+**`SNKin_IsPlayerChild` is published lazily**, and that is a property to design
+around rather than a caveat. Most of the player's children never spawn an NPC
+at all — 29 of 32 on the development save are children on paper — and Fertility
+Mode's reference cache holds only a few of the ones that do: it is
+`new Actor[128]` over an archetype space of 220, keyed by appearance rather than
+by child. So the flag is stamped when an actor is actually *seen*: when a bio is
+rendered, when a reference binds, when a child is added by hand.
+
+Measured on that save, a sweep alone reached 2 of 32. Adding the render path
+caught Toryy — summoned, adult, followed the player, and absent from Fertility
+Mode's array entirely — who read `SNKin_Bound = 0` and would have passed a guard
+keyed on it.
+
+For a romance gate this is sound, because romance implies conversation and
+conversation renders a bio. **For anything that can fire before first contact,
+it is not** — a child nobody has met yet still reads `0`.
+
+**Everything else here is internal**, `SNKin_Bound` especially. It means *bound
+to a spawned reference*, which is not the same question: `BindChildRef` refuses
+to bind when two children share one actor, so a real child of the player can
+have `SNKin_Bound == 0` forever. A guard reading it would let that child be
+romanced. `SNKin_IsPlayerChild` is stamped on the refused path too, and a
+migration may clear `SNKin_Bound` wholesale without notice.
+
+### These are ground truth, not knowledge
+
+A count of `2` says nothing about whether anyone has *heard* of either child —
+including the mother's own neighbours. Treating these as knowledge produces
+NPCs omniscient about the player's paternity.
+
+Who knows what belongs to the mod modelling perception. A consumer wanting
+jealousy should let SkyrimNet's own memory carry the revelation — a mother
+speaks about her child, someone standing nearby witnesses it — and use these
+keys only as the cheap Papyrus pre-filter before spending anything on an LLM
+call:
+
+```papyrus
+Int total = StorageUtil.GetIntValue(None, "SNKin_PlayerChildTotal", 0)
+If total == 0
+    Return    ; nothing to be jealous about anywhere in this playthrough
+EndIf
+Int hers = StorageUtil.GetIntValue(akActor, "SNKin_ChildrenByPlayer", 0)
+Bool byAnother = (total - hers) > 0
+```
+
+### What they cannot answer
+
+The roster holds **only the player's children**. Whether an NPC has children by
+anyone else is Fertility Mode's data, not this mod's — so
+`SNKin_ChildrenByPlayer` is named for exactly what it counts, and there is no
+general child count on offer.
+
+---
+
 ## Storage
 
 | Where | What | Why |

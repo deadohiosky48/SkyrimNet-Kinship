@@ -554,6 +554,9 @@ Function Sweep()
     NoteDeliveries()
     NoteNewChildren()
     BindSpawnedChildren()
+    ; LAST, and it has to be. It publishes what the passes above just decided,
+    ; so anything running earlier would export the previous sweep's answer.
+    RefreshKinshipExports()
 
     _sweeping = False
 EndFunction
@@ -1252,11 +1255,18 @@ Function BindSpawnedChildren()
     Int i = 0
     While i < spawned.Length
         Actor c = spawned[i]
-        If c != None && StorageUtil.GetIntValue(c, "SNKin_Bound", 0) != 1
-            Int idx = ChildIndex(c.GetDisplayName())
-            If idx >= 0 && BindChildRef(c, idx)
-                Diag(LOG_INFO(), "Bound " + c.GetDisplayName() + " to record " + idx + ".")
+        If c != None
+            If StorageUtil.GetIntValue(c, "SNKin_Bound", 0) != 1
+                Int idx = ChildIndex(c.GetDisplayName())
+                If idx >= 0 && BindChildRef(c, idx)
+                    Diag(LOG_INFO(), "Bound " + c.GetDisplayName() + " to record " + idx + ".")
+                EndIf
             EndIf
+            ; STAMPED EVEN WHEN THE BINDING WAS REFUSED, and that is the whole
+            ; point. BindChildRef returns False when two children share one
+            ; spawned actor, but that actor is still the player's child - and a
+            ; consumer gating romance on it must not be told otherwise.
+            StampChildActor(c)
         EndIf
         i += 1
     EndWhile
@@ -1366,6 +1376,12 @@ Bool Function SetParentStatic(String asChildName, Actor akParent, Int aiIsFather
     ; Anyone deliberately chosen stays offerable in the editor forever, even if
     ; FMR never tracked them or has since forgotten them.
     RememberPerson(akParent)
+
+    ; BOTH ends of a correction. The parent losing the child needs republishing
+    ; every bit as much as the one gaining it, and oldId is the only place its
+    ; FormID is still known.
+    RefreshParentCount(oldId)
+    RefreshParentCount(newId)
 
     Diag(LOG_INFO(), "SetParent: " + asChildName + " -> " + role + " " + \
         akParent.GetDisplayName() + ".")
@@ -1616,6 +1632,9 @@ Bool Function AddChildStatic(String asChildName, Int aiChildFormID, Int aiMother
     If aiFatherFormID != 0
         SetParentByIdStatic(asChildName, aiFatherFormID, 1)
     EndIf
+    ; Parent counts are already republished by SetParentByIdStatic; the total is
+    ; not, and a manually added child moves it.
+    RefreshChildTotal()
     Diag(LOG_INFO(), "AddChild: created '" + asChildName + "' at roster index " + idx + ".")
     Return True
 EndFunction
@@ -1657,6 +1676,9 @@ Bool Function BindChildRef(Actor akChild, Int aiIdx) Global
     StorageUtil.SetIntValue(akChild, "SNKin_Bound", 1)
     JsonUtil.SetIntValue(StoreFile(), "ref." + refId + ".child", aiIdx)
     JsonUtil.Save(StoreFile())
+    ; SNKin_Bound is OURS and may be cleared wholesale by a migration. The
+    ; exported flag is published separately so consumers never read it.
+    StampChildActor(akChild)
     Return True
 EndFunction
 
@@ -1697,6 +1719,21 @@ Bool Function ForgetChildStatic(String asChildName) Global
     EndIf
     JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".hidden", 1)
     JsonUtil.Save(StoreFile())
+
+    ; Republish immediately rather than waiting for the next sweep. A hidden
+    ; record is this mod stating the actor is not the player's child in this
+    ; timeline, and the exported flag has to agree from that instant - a guard
+    ; reading a stale 1 would keep blocking, which is at least safe, but a stale
+    ; count feeds a disposition and would simply be wrong.
+    Actor kid = Game.GetFormEx(JsonUtil.GetIntValue(StoreFile(), \
+        "child." + idx + ".refId", 0)) as Actor
+    If kid != None
+        StorageUtil.SetIntValue(kid, "SNKin_IsPlayerChild", 0)
+    EndIf
+    RefreshParentCount(mId)
+    RefreshParentCount(fId)
+    RefreshChildTotal()
+
     Diag(LOG_INFO(), "ForgetChild: " + asChildName + " hidden and unlinked from both parents.")
     Return True
 EndFunction
@@ -1712,8 +1749,209 @@ Bool Function RestoreChildStatic(String asChildName) Global
     EndIf
     JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".hidden", 0)
     JsonUtil.Save(StoreFile())
+    Actor kid = Game.GetFormEx(JsonUtil.GetIntValue(StoreFile(), \
+        "child." + idx + ".refId", 0)) as Actor
+    If kid != None
+        StorageUtil.SetIntValue(kid, "SNKin_IsPlayerChild", 1)
+    EndIf
+    RefreshChildTotal()
     Diag(LOG_INFO(), "RestoreChild: " + asChildName + " is visible again.")
     Return True
+EndFunction
+
+; ===========================================================================
+; THE PUBLIC PAPYRUS CONTRACT
+;
+; Three StorageUtil keys other mods may read. Everything else in this script -
+; including SNKin_Bound - is internal and may change or be cleared wholesale by
+; a migration without notice.
+;
+;   SNKin_IsPlayerChild     Int, per actor. 1 if this actor is one of the
+;                           player's children on our roster.
+;   SNKin_ChildrenByPlayer  Int, per actor. Non-hidden children this actor
+;                           co-parents with the player.
+;   SNKin_PlayerChildTotal  Int, global (None scope). Non-hidden children on
+;                           the roster.
+;
+; INTS, NOT STRINGS: StorageUtil Strings do not survive a save reload. Ints,
+; Floats and Forms do.
+;
+; GROUND TRUTH, NOT KNOWLEDGE. A count of 2 says nothing about whether anyone
+; has heard of either child. A consumer that treats these as knowledge will
+; produce omniscient NPCs; who knows what belongs to the mod modelling
+; perception, not to the one keeping the records.
+;
+; Kinship's roster holds ONLY the player's children, so "how many children does
+; she have" is a question this cannot answer - only "how many by the player".
+; The key is named for what it actually means.
+; ===========================================================================
+
+Function StampChildActor(Actor akChild) Global
+    ; Publishes SNKin_IsPlayerChild for one actor.
+    ;
+    ; Resolves the same way the decorator does - bound reference first, display
+    ; name second - so the Papyrus flag and kinship_is_child cannot disagree.
+    ; They used to: an unbound child read as "not a child" here while rendering
+    ; a full parentage block there, and a guard reading the flag would have let
+    ; the player romance his own daughter.
+    ;
+    ; Also writes child.<idx>.refId, the reverse of ref.<formid>.child, so
+    ; ForgetChild can reach the actor to clear the flag without a search.
+    If akChild == None
+        Return
+    EndIf
+    Int idx = JsonUtil.GetIntValue(StoreFile(), "ref." + akChild.GetFormID() + ".child", -1)
+    If idx < 0
+        idx = ChildIndex(akChild.GetDisplayName())
+    EndIf
+    If MarkChildActor(akChild, idx)
+        Return
+    EndIf
+    StorageUtil.SetIntValue(akChild, "SNKin_IsPlayerChild", 0)
+EndFunction
+
+Bool Function MarkChildActor(Actor akChild, Int aiIdx) Global
+    ; Flags one actor as the player's child, given an ALREADY RESOLVED roster
+    ; index. Returns False without writing anything if the index is not a live
+    ; child, so a caller can tell "marked" from "not one".
+    ;
+    ; SPLIT OUT FROM StampChildActor BECAUSE THE SWEEP CANNOT FIND MOST
+    ; CHILDREN. Stamping only what walks out of SpawnedChildActorRefs reached 2
+    ; of 32 on the development save - that array is new Actor[128] over an
+    ; archetype space of 220 and is keyed by appearance, not by child, so it is
+    ; a cache of a few summoned adults rather than a list of anyone. Toryy has
+    ; been summoned AND followed the player and is still not in it.
+    ;
+    ; The decorators do not have that problem: they resolve whatever actor they
+    ; are handed. So they call this, and every child SkyrimNet renders a bio for
+    ; gets flagged - which for a romance guard is exactly the right population,
+    ; since nobody romances an NPC they have never spoken to.
+    ;
+    ; ONLY EVER WRITES A 1. Writing a 0 from a decorator would add a co-save
+    ; entry for every NPC in Skyrim - 3,151 of them on this install - to record
+    ; a value identical to the default. Clearing is left to the paths that know
+    ; a child STOPPED being one: ForgetChild, and the sweep over bound refs.
+    If akChild == None || aiIdx < 0
+        Return False
+    EndIf
+    If JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".hidden", 0) == 1
+        Return False
+    EndIf
+    StorageUtil.SetIntValue(akChild, "SNKin_IsPlayerChild", 1)
+    ; Reverse pointer, so ForgetChild can reach this actor to clear the flag.
+    ; Written once per child and then never again, so the save stays off the
+    ; hot path of a decorator that runs on every bio build.
+    Int refId = akChild.GetFormID()
+    If JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0) != refId
+        JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".refId", refId)
+        JsonUtil.Save(StoreFile())
+    EndIf
+    Return True
+EndFunction
+
+Function RefreshParentCount(Int aiFormID) Global
+    ; Publishes SNKin_ChildrenByPlayer for one parent.
+    ;
+    ; The reverse index already excludes hidden children - ForgetChild withdraws
+    ; both parent links - so its length IS the count, with no filtering here.
+    If aiFormID == 0
+        Return
+    EndIf
+    Actor p = Game.GetFormEx(aiFormID) as Actor
+    If p == None
+        Return
+    EndIf
+    StorageUtil.SetIntValue(p, "SNKin_ChildrenByPlayer", \
+        JsonUtil.IntListCount(StoreFile(), ParentPath(aiFormID)))
+EndFunction
+
+Int Function RefreshChildTotal() Global
+    ; Publishes SNKin_PlayerChildTotal and returns it.
+    ;
+    ; Lets a consumer skip its whole jealousy path in one Papyrus read when the
+    ; player has fathered nobody, before spending anything on an LLM call.
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int total = 0
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+            total += 1
+        EndIf
+        i += 1
+    EndWhile
+    StorageUtil.SetIntValue(None, "SNKin_PlayerChildTotal", total)
+    Return total
+EndFunction
+
+String Function DumpExports()
+    { Writes every exported key to snkin.log, for verifying the contract from
+      outside the game. Instance, not Global, so the web API can dispatch it.
+
+      The line that matters is any child reading IsPlayerChild=1 Bound=0. That
+      is a child the OLD Papyrus guard could not see - the flag now resolves by
+      bound reference OR display name, the same two paths the decorator uses,
+      instead of by the binding result alone. Before this, such a child looked
+      like a stranger to any mod gating on SNKin_Bound. }
+    Diag(LOG_INFO(), "--- exports --- SNKin_PlayerChildTotal = " + \
+        StorageUtil.GetIntValue(None, "SNKin_PlayerChildTotal", 0))
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+            String line = "  " + JsonUtil.GetStringValue(StoreFile(), "child." + i + ".name", "?")
+            Actor kid = Game.GetFormEx(JsonUtil.GetIntValue(StoreFile(), \
+                "child." + i + ".refId", 0)) as Actor
+            If kid == None
+                line += ": no actor of its own"
+            Else
+                line += ": IsPlayerChild=" + StorageUtil.GetIntValue(kid, "SNKin_IsPlayerChild", 0) + \
+                    " Bound=" + StorageUtil.GetIntValue(kid, "SNKin_Bound", 0)
+            EndIf
+            line += "  mother " + ExportedParent(JsonUtil.GetIntValue(StoreFile(), \
+                "child." + i + ".motherId", 0))
+            line += "  father " + ExportedParent(JsonUtil.GetIntValue(StoreFile(), \
+                "child." + i + ".fatherId", 0))
+            Diag(LOG_INFO(), line)
+        EndIf
+        i += 1
+    EndWhile
+    Diag(LOG_INFO(), "--- end exports ---")
+    Return "ok"
+EndFunction
+
+String Function ExportedParent(Int aiFormID) Global
+    { One parent rendered as name[count], or "-" when unrecorded. Reads the
+      published key rather than recomputing it, so a drift between the store and
+      what was exported shows up here instead of being papered over. }
+    If aiFormID == 0
+        Return "-"
+    EndIf
+    Actor p = Game.GetFormEx(aiFormID) as Actor
+    If p == None
+        Return "(unresolvable)"
+    EndIf
+    Return p.GetDisplayName() + "[" + \
+        StorageUtil.GetIntValue(p, "SNKin_ChildrenByPlayer", 0) + "]"
+EndFunction
+
+Function RefreshKinshipExports() Global
+    ; Full republish, driven from the sweep.
+    ;
+    ; Walks the roster rather than any list of parents, because there is no such
+    ; list - a parent exists only as a reverse index keyed by FormID. A parent
+    ; whose last child was withdrawn is therefore NOT visited here and would
+    ; keep a stale count; ClearParent and ForgetChild refresh those precisely at
+    ; the point of change, which is the only moment the affected FormID is known.
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+            RefreshParentCount(JsonUtil.GetIntValue(StoreFile(), "child." + i + ".motherId", 0))
+            RefreshParentCount(JsonUtil.GetIntValue(StoreFile(), "child." + i + ".fatherId", 0))
+        EndIf
+        i += 1
+    EndWhile
+    RefreshChildTotal()
 EndFunction
 
 Int Function PersonIdByName(String asName) Global
@@ -1944,6 +2182,9 @@ Bool Function ClearParentStatic(String asChildName, Int aiIsFather) Global
     JsonUtil.SetStringValue(StoreFile(), nameField, "")
     JsonUtil.SetIntValue(StoreFile(), idField, 0)
     JsonUtil.Save(StoreFile())
+    ; The sweep walks the roster and so never visits a parent who has just lost
+    ; their last child. This is the only point that still knows who they were.
+    RefreshParentCount(oldId)
     Diag(LOG_INFO(), "ClearParent: " + asChildName + " no longer has a recorded " + \
         "mother/father (role " + aiIsFather + ").")
     Return True
