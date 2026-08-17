@@ -1,109 +1,85 @@
 # Backlog
 
-Deferred deliberately. Ordered by what blocks a release.
+Deferred deliberately, plus an honest record of what has and has not been
+exercised in play.
 
 ---
 
-## Migrate the UI to SKSE Menu Framework
+## Verified in play
 
-**The intended direction, deferred until kinship associations are proven
-end-to-end.** UILIB_1 lists work — the picker opened and navigated correctly on
-2026-08-15 — but they are a chain of modal list prompts, which is a poor shape
-for a job that is really "browse a table of children and fill in the blanks".
-An ImGui panel showing every child and both parents at once, with search, is
-the right interface for this. Lover's Ledger is the working precedent:
-`LoversLedger.dll` is storage only, and its UI is SKSE Menu Framework.
+Each of these was confirmed against a live save rather than reasoned about.
 
-What that migration costs, so it is decided with open eyes:
+- **Automatic capture, end to end.** Conception → labour → maturation →
+  recorded mother, with no intervention. First done for Gaius (Jarl Elisif the
+  Fair), then Geira (Aia Arria).
+- **Both halves of the rendering.** A child's bio states its parents; a
+  parent's bio states their children, singular and plural. Elisif volunteered
+  her son's name and sex unprompted, from an open question that gave away
+  neither.
+- **The in-game picker.** Crosshair assignment writes through to the store and
+  on into dialogue - Camilla Valerius' two children were assigned that way.
+- **The SKSE panel.** Inline editing with staged Save, sourced from our own
+  roster rather than Fertility Mode's.
+- **Tie shortlists.** Danica Pure-Spring and Nilsine Shatter-Shield matured
+  about a game minute apart; both children were recorded with a two-candidate
+  shortlist rather than a guess.
 
-- **A C++ SKSE plugin.** SKSE Menu Framework ships no Papyrus scripts — only a
-  DLL, ini, pdb and JSON — so registering a menu is a C++ API call. There is no
-  Papyrus route in.
-- **A toolchain that does not exist on this machine.** No CMake, no MSVC, no
-  vcpkg, no Visual Studio. That is Build Tools plus CommonLibSSE-NG plus vcpkg
-  before a line of mod code.
-- **A per-runtime maintenance burden** that the current all-Papyrus build does
-  not have.
+## Not yet exercised
 
-The data model is already UI-agnostic: `SNKin_Bridge` exposes Globals
-(`SetParentStatic`, `SetParentByIdStatic`, `ChildIndex`, `ParentPath`) and the
-store is JSON on disk, so a new front end replaces `SNKin_Picker` only. Keep it
-that way — nothing UI-shaped should leak into the bridge.
-
-## Let players remap the hotkey
-
-**Superseded in part by the above** — a Menu Framework panel would own its own
-binding. Kept because the hotkey must survive whatever the UI turns out to be.
-
-Today the key lives in SkyrimNet's own config (`kinHotkey` / `kinHotkeyModifier`)
-and is read at `Bootstrap`. That is fine for development — it needs no extra
-dependency and can be re-armed live by calling `RegisterHotkey` over the web API
-— but it is a poor answer for a released mod, where players expect to rebind
-from a menu.
-
-Two constraints that any implementation has to respect, both learned the hard
-way and neither obvious:
-
-1. **A modifier does NOT consume the base key.** `kinHotkeyModifier` is only
-   checked inside our own `OnKeyDown`; whatever else owns the base key still
-   receives the press. LAlt+K was chosen on the assumption that a chord could
-   not collide, and it collided immediately because K was already taken. A
-   remap UI must therefore help the player find a *genuinely free* key rather
-   than implying a chord makes a taken one safe.
-
-2. **The MCM page may never render.** SkyUI's mod registry is a Papyrus array
-   capped at 128 entries. On a load order at that ceiling the menu registers and
-   never displays — and MCM Helper's own keybind can then never be bound,
-   because binding happens on the page that will not open. NPC Renamer
-   (`_CV_NPCRenamer`) hit this and had to keep a direct `RegisterForKey`
-   fallback regardless.
-
-So the shape is: keep the direct registration as the source of truth, and let
-an MCM *edit the value* rather than own the binding. Anything that makes the
-key depend on the page rendering will fail on exactly the load orders this mod
-is aimed at.
-
-Note `MCM_ConfigBase.psc` is not on disk anywhere — it ships inside
-`MCMHelper.bsa`, so building an MCM script means sourcing that header first.
+- **A female-player playthrough.** The storage model is parent-agnostic and an
+  NPC father gets a FormID and a reverse index, but no save has actually run
+  that way. This is the largest untested surface.
+- **The timeline warning.** Records dated after the current save point are
+  detected and offered for deletion; no real rewind has yet triggered it.
+- **A second playthrough claiming its own store.** The per-save split works in
+  principle - the first save claims the existing file, later ones get their own
+  - but only one save has ever claimed.
 
 ---
 
-## Untested paths
+## Let players remap the hotkey from a menu
 
-- **The picker's WRITE path.** The menu renders and navigates (confirmed
-  2026-08-15, `UILIB_1.ShowList` works), but no assignment made through it has
-  reached the store yet. The one recorded mother came from
-  `RecoverMotherByRecentBirth`, not from the UI. Until a picker-driven
-  `SetParent` line appears in `snkin.log`, that path is unproven.
-- **Parent-side rendering.** Sapphire is the first parent ever recorded, so
-  `## Your Child` has never produced output.
-- **The father side.** No NPC father has been recorded yet, so the symmetry
-  work in schema 3 is unexercised in play. Needs a female-player save, or a
-  father assigned by hand.
-- **Automatic end-to-end capture.** Wylandriah's pregnancy is the first watched
-  from conception; nothing has yet gone conception → labor → maturation →
-  recorded mother without intervention.
+Today the key lives in SkyrimNet's config (`kinHotkey` / `kinHotkeyModifier`)
+and is read at `Bootstrap`. That is fine for development and a poor answer for
+a released mod, where players expect to rebind from a UI.
+
+Two constraints any implementation must respect, both learned the hard way:
+
+1. **A modifier does NOT consume the base key.** `kinHotkeyModifier` is checked
+   only inside our own `OnKeyDown`; whatever else owns the base key still
+   receives the press. LAlt+K was chosen on the assumption a chord could not
+   collide, and it collided immediately.
+2. **An MCM page may never render.** SkyUI's mod registry is a Papyrus array
+   capped at 128 entries. Past that a menu registers and never displays - and
+   MCM Helper's own keybind can then never be bound, because binding happens on
+   the page that will not open. NPC Renamer hit this and kept a direct
+   `RegisterForKey` fallback regardless.
+
+So the shape is: keep direct registration as the source of truth and let a UI
+*edit the value*. Anything that makes the key depend on a page rendering will
+fail on exactly the load orders this mod is aimed at.
+
+The SKSE panel is the more natural home for it now that it exists.
 
 ---
 
 ## Known gaps, accepted
 
-- **Runa and Marcia have no recoverable mothers.** Both were recorded under the
-  old build, before the `CurrentFather` fix, so no labour was ever captured for
-  them. Confirmed unrecoverable by `DumpMothers` on 2026-08-15: identifying a
-  just-named child's mother requires the signature `lastBirth > 0` with
-  `babyAdded == 0`, and **no tracked actor shows it** — their mothers have
-  either been auto-removed from tracking or conceived again, which resets
-  `lastBirth` to 0. Assign by hand if known.
-
-- **A wrong answer was written and withdrawn.** `RecoverMotherByRecentBirth`
-  assigned Sapphire to Marcia. It searched around *now*, but a child named now
-  was born `BabyDuration` days earlier, so it compared opposite ends of a
-  ten-day pipeline; Sapphire was still carrying her own baby at the time. Fixed
-  by `RecoverMotherByBirthAge`, undone with `ClearParent`. Worth remembering
-  that the automatic path recorded nothing for either child — every wrong
-  answer in this episode came from the bolted-on heuristic, not the pipeline.
+- **Six children have no recoverable mother.** Runa, Marcia, Titus and Leif
+  were recorded by builds that predated the `CurrentFather` fix, so no labour
+  was ever captured for them; Brennen and Yrsa lost their shortlists to an
+  early version of the panel that deleted candidates on assignment. All are
+  fixable by hand and none is recoverable automatically.
+- **Every recovery path that reads Fertility Mode's arrays is on a timer.** FMR
+  prunes a mother from tracking within game hours of her child maturing, and
+  `lastBirth` resets entirely if she conceives again. The durable paths are the
+  ones that do not depend on FMR still remembering: our own people roster, the
+  crosshair, and the candidate shortlist once written.
 - **`child.N.race` is always empty.** FMR's `PlayerChildRace` array is short on
-  this save. Cosmetic; the prompt does not use it.
-- **The 23 seeded children cannot have mothers recovered.** FMR never stored the
-  link. This is the original diagnosis, not a regression.
+  the save this was built against. Cosmetic; the prompt does not use it.
+- **Fertility Mode reuses one actor for two children** that share a class, race
+  and gender - `SpawnedChildActorRefs` is keyed by appearance archetype, not by
+  child. `BindChildRef` refuses the second binding rather than giving one NPC
+  two identities, so the second child simply stays unbound.
+- **Forking cannot be disabled** on a public repository. That is inherent to
+  public hosting, not a gap in the settings.
