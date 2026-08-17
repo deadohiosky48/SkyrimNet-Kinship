@@ -1,0 +1,134 @@
+{% if render_mode == "full" or render_mode == "thoughts" or render_mode == "target" or render_mode == "dialogue_target" %}
+{# render_mode guard MUST be within the first 5 lines - SkyrimNet scans only
+   that far for it, and without it assumes this prompt renders in every mode,
+   which it flags as a response-delay risk. Commentary below, never above. #}
+{# "transform" IS DELIBERATELY ABSENT, and was removed after measurement.
+   Instrumenting this prompt on the live save produced, for the same NPC in the
+   same conversation:
+
+     KINDEBUG actor=Toryy known=1     role=child mode=full
+     KINDEBUG actor=Toryy known=UNDEF role=UNDEF mode=transform
+
+   UNDEF rather than 0 is the tell: 0 would mean the decorator ran and answered
+   "nothing recorded", while UNDEF means the field was not there at all - the
+   decorator did not resolve. That matches SkyrimNet's documented limit, that a
+   mod-added decorator only resolves for the current speaker or target.
+
+   Rendering in transform mode therefore produced nothing anyway; all it added
+   was a failing decorator lookup on every dialogue transformation. The
+   default() guards meant it degraded to silence rather than an error, which is
+   exactly why it would have gone unnoticed. #}
+{# ══════════════════════════════════════════════════════════════════════════ #}
+{# Kinship — who someone's parents are, and whose children they bore          #}
+{#                                                                            #}
+{# THIS BLOCK IS THE ENTIRE POINT OF THE MOD, so it is worth being explicit   #}
+{# about why it is a submodule and not an event.                              #}
+{#                                                                            #}
+{# A birth reached SkyrimNet only as a MEMORY, and only if the player         #}
+{# happened to be present. Memories are a rolling window: they decay, and a   #}
+{# mother stops being able to speak about a child she bore. Character bios do #}
+{# not decay - they are rebuilt from source on every single render. So this   #}
+{# renders unconditionally from our own store and can never be forgotten.     #}
+{#                                                                            #}
+{# CONTRACT with get_kinship (SNKin_Decorators.GetKinship):                    #}
+{#   kin.known       1 when anything is recorded, 0 otherwise                  #}
+{#   kin.role        "child" or "mother"                                       #}
+{#   kin.motherKnown 1 only when the mother was actually resolved              #}
+{# INTS, NOT JSON BOOLEANS - a hand-written lowercase "true" does not survive #}
+{# Papyrus compilation (it case-folds against the string table), and one bad  #}
+{# token would make EVERY kin.* field undefined at once, silently. Everything #}
+{# below is read through default() so a failed lookup renders nothing at all  #}
+{# rather than breaking the bio for every NPC in the game.                    #}
+{# ══════════════════════════════════════════════════════════════════════════ #}
+{% if not is_player(actorUUID) %}
+{% set kin = get_kinship(actorUUID) %}
+{% set me = decnpc(actorUUID) %}
+{% if default(kin.known, 0) == 1 %}
+{% set first_person = (render_mode == "full" or render_mode == "thoughts") %}
+{% set role = default(kin.role, "") %}
+{# decnpc() is bound above rather than chained as decnpc(actorUUID).name. Inja
+   is not Jinja2 and attribute access on a function's return value is not
+   something any shipped prompt in this install relies on - 0250 and 0330 both
+   bind first. A parse failure here would take down the character_bio render
+   for EVERY NPC in the game, silently, so this is not the place to find out. #}
+
+{# ── THE CHILD'S SIDE ────────────────────────────────────────────────────── #}
+{% if role == "child" %}
+{% set father = default(kin.father, "") %}
+{% set mother = default(kin.mother, "") %}
+{% set mother_known = default(kin.motherKnown, 0) %}
+{% if first_person %}
+## Your Parents
+
+{% if father != "" %}
+{{ father }} is your father. This is simply a fact of your life, known to you for as long as you have been able to understand anything.
+{% endif %}
+{% if mother_known == 1 %}
+{{ mother }} is your mother. She bore you{% if father != "" %} to {{ father }}{% endif %}.
+{% endif %}
+
+{# The instruction NOT to perform it is as important as the fact itself. Told
+   only WHO their parents are, a model will bring it up in nearly every line -
+   the same failure that made NPCs say "Yes, Daddy" in every sentence once
+   form-of-address was stored. Children talk about their parents constantly in
+   the way children actually do: assuming them, not announcing them. #}
+- You do not introduce yourself by your parentage or announce it to strangers. You assume it, the way any child assumes their own family.
+- {% if father != "" %}Speak about {{ father }} as your parent, not as an adventurer or a legend. Whatever else the world thinks {{ father }} is, to you they are the person who is meant to come back.{% endif %}
+{% if mother_known == 1 %}
+- Your feelings about {{ mother }} are your own — closeness, distance, longing, resentment are all available to you and depend on what your life has actually been like.
+{% elif father != "" %}
+{# THE HONEST SILENCE. A child whose mother we could not recover must read as a
+   child who has not been told - not as a child with no mother. The first
+   invites play to discover her; the second quietly asserts something false and
+   permanent. Same principle as the Romantasy mod's unknown-orientation case. #}
+- You do not know who your mother is, or no one has ever told you. If it comes up, that gap is a real thing in your life and you may feel however you feel about it — curious, indifferent, hurt. Do not invent her.
+{% endif %}
+{% else %}
+{% if father != "" %}
+{{ me.name }} is {{ father }}'s child{% if mother_known == 1 %} by {{ mother }}{% endif %}.
+{% endif %}
+{% endif %}
+
+{# ── THE PARENT'S SIDE ───────────────────────────────────────────────────── #}
+{# EITHER PARENT, and the wording follows k.relation per child rather than
+   assuming motherhood. The first version of this block could only say "bore",
+   because the store could only hold a mother - so on a female-player
+   playthrough the NPC father knew nothing at all about his own children. The
+   verb has to come from the data, not from an assumption about who the NPC is.
+   Falls back to the neutral "have a child by" when relation is unset. #}
+{% elif role == "parent" %}
+{# COUNT IS CHECKED BEFORE THE LIST IS EVER TOUCHED. `default(kin.children, [])`
+   would be the obvious spelling and relies on Inja accepting an empty-array
+   literal as a default, which is unverified here. Guarding on the integer
+   first means the loop below only ever runs over a list the decorator actually
+   produced - count > 0 and children non-empty are set together in Papyrus. #}
+{% set n = default(kin.count, 0) %}
+{% if n > 0 %}
+{% if first_person %}
+## Your {% if n == 1 %}Child{% else %}Children{% endif %}
+
+{% for k in kin.children %}
+- **{{ default(k.name, "your child") }}**{% if default(k.gender, "") != "" %}, your {{ k.gender }}{% endif %}{% if default(k.relation, "") == "mother" %}, whom you bore{% elif default(k.relation, "") == "father" %}, whom you fathered{% endif %}{% if default(k.otherParent, "") != "" %} with {{ k.otherParent }}{% endif %}.
+{% endfor %}
+{% if n > 8 %}
+- ...and {{ n - 8 }} more.
+{% endif %}
+
+{# WHY THIS IS STATED AS PERMANENT FACT rather than left to memory: it is the
+   bug this mod exists for. The birth would decay out of their memory window
+   and they would then speak as though it had never happened - to the child's
+   other parent, sometimes to the child. #}
+- This happened to you and it does not fade. However long ago it was, and however rarely it comes up, you know these children exist and you know whose they are.
+- How you feel about it is yours to hold: pride, grief, guilt, fierce attachment, or the flat ache of not having been able to keep them. Nothing here tells you to be a devoted parent.
+- Do not recite this like a record. It surfaces the way it would for a real person — when the other parent is in front of you, when children are mentioned, when someone asks what your life has been.
+{% else %}
+{# Third person. No index subscripting - the relation is picked up from the loop
+   instead, which needs no assumption about how Inja handles kids[0] on a list
+   that only Papyrus guarantees is non-empty. #}
+{{ me.name }} has {{ n }} child{% if n != 1 %}ren{% endif %}{% if n == 1 %}{% for k in kin.children %}{% if default(k.otherParent, "") != "" %} with {{ k.otherParent }}{% endif %}{% endfor %}{% endif %}.
+{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}

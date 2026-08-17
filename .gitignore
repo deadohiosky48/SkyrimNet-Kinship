@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# Build environment. 3.4 GB of it, none of it ours.
+#
+# CommonLibSSE-NG and vcpkg are FETCHED by tools/build-dll.ps1 -Setup, so they
+# are reproducible from a one-line command and must never enter history. Git
+# does not forget: committing them once leaves them in every future clone even
+# after deletion.
+# ---------------------------------------------------------------------------
+/.tools/
+/SKSE_Source/extern/
+/SKSE_Source/build/
+/SKSE_Source/out/
+
+# Extracted vanilla Papyrus sources, unpacked from the game's own Scripts.zip
+# by tools/build.ps1. Bethesda's, cached locally, not ours to redistribute.
+/.build/
+
+# Release archives. Rebuildable by tools/package.ps1, and GitHub Releases is
+# the right home for the ones that matter.
+/dist/
+
+# ---------------------------------------------------------------------------
+# Third-party source vendored for COMPILATION ONLY.
+#
+# These are other people's mods, kept locally so our scripts can compile
+# against their types. None is our work and none is ours to redistribute:
+#
+#   SkyrimNetApi.psc      SkyrimNet
+#   _JSW_BB_Storage.psc   Fertility Mode Reloaded
+#   UILIB_1.psc           SkyUILib, shipped with Fertility Mode Reloaded
+#   SKSEMenuFramework.h   SKSE Menu Framework
+#
+# docs/BUILD_DLL.md tells a builder where to get each one. That is a slightly
+# worse first-build experience and a much better licensing position.
+# ---------------------------------------------------------------------------
+/src/scripts/SkyrimNetApi.psc
+/src/scripts/_JSW_BB_Storage.psc
+/src/scripts/UILIB_1.psc
+/SKSE_Source/include/SKSEMenuFramework.h
+
+# Compiled Papyrus. Rebuilt by tools/build.ps1 from src/scripts, and shipped
+# in release archives rather than tracked.
+/Scripts/*.pex
+
+# The Creation Kit plugin is a binary built by hand per docs/BUILD_PLUGIN.md.
+# Tracked deliberately - it is small, ESL-flagged, and rebuilding it means ten
+# minutes of clicking in the CK rather than running a script.
+!SNKin_Integration.esp
+
+# Editors, OS
+.vs/
+.vscode/
+*.user
+Thumbs.db
+desktop.ini

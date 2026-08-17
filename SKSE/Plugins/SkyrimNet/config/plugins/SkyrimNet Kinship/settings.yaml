@@ -1,0 +1,29 @@
+# Live settings for SkyrimNet Kinship.
+#
+# SHIPPED DELIBERATELY. A config key must exist in BOTH manifest.yaml AND this
+# file to be readable: SkyrimNet does not regenerate settings.yaml, so a key
+# that appears only in the manifest renders in the dashboard and then returns
+# its Papyrus default forever, whatever the dashboard shows.
+#
+# Keys must match the manifest paths exactly. Flat only - dotted paths collapse
+# to their last segment.
+kinEnabled: true
+# Matched to FMR's own PollingInterval, measured live at 1.0h on 2026-08-15.
+# Checking twice as often as FMR simulates cannot find anything sooner; it only
+# spends script budget. And it buys nothing against ties either - Camilla and
+# Ganna mature 0.00035 game days apart, which no interval separates.
+kinPollHours: 1.0
+kinSeedExisting: true
+# Left Shift + 9.
+#
+# 10 IS THE '9' KEY, NOT 9. DirectX scan codes for the digit row are offset by
+# one: 2 is '1', 3 is '2' ... 10 is '9', 11 is '0'. Scan code 9 is the '8' key,
+# which is already claimed in this load order - so the off-by-one would have
+# silently bound the wrong key to an occupied code.
+#
+# Not Scroll Lock (70): claimed by NPC Renamer, and absent from many keyboards.
+# Not LAlt+K: K is taken, and Alt is not honoured by whatever holds it.
+kinHotkey: 10
+kinHotkeyModifier: 42
+kinLogLevel: 3
+kinNotify: false
