@@ -277,3 +277,27 @@ else can consume as a soft dependency without taking on Fertility Mode.
 
 It does **not** enroll children in any romance system, modify Fertility Mode's
 scripts, or write to SkyrimNet's SQLite database.
+
+---
+
+## Licence
+
+[MIT](LICENSE) — covering **this mod's own code**: the `SNKin_*` Papyrus
+scripts, the SKSE panel under `SKSE_Source/src`, the `0340_kinship.prompt`
+submodule, and the tooling.
+
+It does **not** cover the dependencies, which are each under their own terms
+and are deliberately **not redistributed here**. Four headers are vendored
+locally so this code can compile against their types, and all four are
+gitignored:
+
+| File | Comes from |
+|---|---|
+| `SkyrimNetApi.psc` | SkyrimNet |
+| `_JSW_BB_Storage.psc` | Fertility Mode Reloaded |
+| `UILIB_1.psc` | SkyUILib, shipped with Fertility Mode Reloaded |
+| `SKSEMenuFramework.h` | SKSE Menu Framework |
+
+[`docs/BUILD_DLL.md`](docs/BUILD_DLL.md) says where to obtain each. A first
+build therefore needs those mods installed — a slightly worse setup experience,
+and the correct position on other people's work.
