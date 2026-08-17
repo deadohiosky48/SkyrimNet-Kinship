@@ -98,10 +98,14 @@ try {
     # --- 5. documentation --------------------------------------------------
     # Under Docs\ rather than loose at the root, so it lands in
     # Data\Docs\SkyrimNet Kinship\ instead of scattering files into Data itself.
+    #
+    # README ONLY. The build docs stay in the repo and out of the archive: this
+    # package already contains a built ESP and a built DLL, so a Creation Kit
+    # walkthrough landing in a player's Data folder is instructions for work
+    # they must never do. Anyone who actually wants to build has the repo.
     $docOut = Join-Path $stage 'Docs\SkyrimNet Kinship'
     New-Item -ItemType Directory -Force -Path $docOut | Out-Null
     Copy-Item (Join-Path $repo 'README.md') $docOut
-    Copy-Item (Join-Path $repo 'docs\BUILD_PLUGIN.md') $docOut
 
     # --- 6. zip ------------------------------------------------------------
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null

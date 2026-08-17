@@ -3,6 +3,9 @@
 Deferred deliberately, plus an honest record of what has and has not been
 exercised in play.
 
+Findings below come from a development save. They are described by mechanism
+rather than by character, because the mechanism is the part that generalises.
+
 ---
 
 ## Verified in play
@@ -10,19 +13,20 @@ exercised in play.
 Each of these was confirmed against a live save rather than reasoned about.
 
 - **Automatic capture, end to end.** Conception → labour → maturation →
-  recorded mother, with no intervention. First done for Gaius (Jarl Elisif the
-  Fair), then Geira (Aia Arria).
+  recorded mother, with no intervention at any step. Repeated across separate
+  births.
 - **Both halves of the rendering.** A child's bio states its parents; a
-  parent's bio states their children, singular and plural. Elisif volunteered
-  her son's name and sex unprompted, from an open question that gave away
-  neither.
+  parent's bio states their children, singular and plural. In the strongest
+  case a mother volunteered her child's name and sex unprompted, from an open
+  question that gave away neither — the record reached her persona, not just
+  the transcript.
 - **The in-game picker.** Crosshair assignment writes through to the store and
-  on into dialogue - Camilla Valerius' two children were assigned that way.
+  on into dialogue.
 - **The SKSE panel.** Inline editing with staged Save, sourced from our own
   roster rather than Fertility Mode's.
-- **Tie shortlists.** Danica Pure-Spring and Nilsine Shatter-Shield matured
-  about a game minute apart; both children were recorded with a two-candidate
-  shortlist rather than a guess.
+- **Tie shortlists.** Two mothers matured about a game minute apart; both
+  children were recorded with a two-candidate shortlist rather than a guess.
+  This is the failing-closed rule doing exactly its job.
 
 ## Not yet exercised
 
@@ -65,11 +69,12 @@ The SKSE panel is the more natural home for it now that it exists.
 
 ## Known gaps, accepted
 
-- **Six children have no recoverable mother.** Runa, Marcia, Titus and Leif
-  were recorded by builds that predated the `CurrentFather` fix, so no labour
-  was ever captured for them; Brennen and Yrsa lost their shortlists to an
-  early version of the panel that deleted candidates on assignment. All are
-  fixable by hand and none is recoverable automatically.
+- **Children created before the fixes landed cannot be repaired
+  automatically.** On the development save six of them: four predate the
+  `CurrentFather` fix, so no labour was ever captured for them, and two lost
+  their candidate shortlists to an early build of the panel that deleted
+  candidates on assignment. All are fixable by hand in the panel. None is
+  recoverable without it.
 - **Every recovery path that reads Fertility Mode's arrays is on a timer.** FMR
   prunes a mother from tracking within game hours of her child maturing, and
   `lastBirth` resets entirely if she conceives again. The durable paths are the
