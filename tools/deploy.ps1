@@ -19,11 +19,13 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$SkyrimRoot = 'G:\SteamLibrary\steamapps\common\Skyrim Special Edition',
+    [string]$SkyrimRoot = '',
     [switch]$PromptsOnly
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '_common.ps1')
+$SkyrimRoot = Resolve-SkyrimRootOrThrow -Override $SkyrimRoot
 $repo = Split-Path -Parent $PSScriptRoot
 $data = Join-Path $SkyrimRoot 'Data'
 if (-not (Test-Path $data)) { throw "Not found: $data" }

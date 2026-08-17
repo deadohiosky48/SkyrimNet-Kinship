@@ -28,13 +28,15 @@ param(
     [string]$FatherFormId,
     [string]$Father,
     [string]$Api = 'http://127.0.0.1:8080',
-    [string]$SkyrimRoot = 'G:\SteamLibrary\steamapps\common\Skyrim Special Edition'
+    [string]$SkyrimRoot = ''
 )
 if (-not $MotherFormId -and -not $FatherFormId -and -not $Father) {
     throw "Give at least one of -MotherFormId, -FatherFormId or -Father."
 }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '_common.ps1')
+$SkyrimRoot = Resolve-SkyrimRootOrThrow -Override $SkyrimRoot
 $log = Join-Path $SkyrimRoot 'Data\SKSE\Plugins\SkyrimNet Kinship\logs\snkin.log'
 
 # Hex -> signed 32-bit Int. Papyrus Ints are signed, so 0xFE21C812 must arrive
