@@ -80,6 +80,30 @@ try {
         $dllNote = 'not built - Papyrus-only package'
     }
 
+    # --- 3c. refuse to ship the builder's directory layout quietly ----------
+    # __FILE__ and std::source_location bake ABSOLUTE source paths into the DLL.
+    # 1.0.0 and 1.1.0 both shipped eight, including the full path to the
+    # checkout that produced them. /d1trimfile: in CMakeLists.txt strips the
+    # prefix - but it is an UNDOCUMENTED flag, so if a future MSVC stops
+    # honouring it the build will NOT fail. It will quietly start leaking again,
+    # which is exactly how the first two releases went out. Hence a check at the
+    # only moment that matters: when the binary is about to be shipped.
+    if (Test-Path $dll) {
+        $ascii = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dll))
+        $leaked = [regex]::Matches($ascii, '[A-Za-z]:\\[ A-Za-z0-9_.\\-]{6,150}') |
+                    ForEach-Object { $_.Value } | Sort-Object -Unique
+        if ($leaked) {
+            $pathNote = "$($leaked.Count) ABSOLUTE PATH(S) EMBEDDED - see warning above"
+            Write-Host "`n  WARNING: the DLL carries build-machine paths:" -ForegroundColor Yellow
+            $leaked | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+            Write-Host "  Verify /d1trimfile: is still applied in SKSE_Source\CMakeLists.txt." -ForegroundColor Yellow
+        } else {
+            $pathNote = 'clean'
+        }
+    } else {
+        $pathNote = 'n/a'
+    }
+
     # --- 4. source, for anyone who wants to patch this ---------------------
     # ONLY OURS. src\scripts also holds SkyrimNetApi.psc and _JSW_BB_Storage.psc,
     # which are SkyrimNet's and Fertility Mode's files respectively - shipping
@@ -117,6 +141,7 @@ try {
     Write-Host "  version   : $Version"
     Write-Host "  plugin    : SNKin_Integration.esp ($eslNote)"
     Write-Host "  SKSE dll  : $dllNote"
+    Write-Host "  dll paths : $pathNote"
     Write-Host "  size      : $([math]::Round((Get-Item $zip).Length / 1KB, 1)) KB"
 }
 finally {

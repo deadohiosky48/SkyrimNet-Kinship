@@ -19,6 +19,24 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(VCPKG_TARGET_TRIPLET "x64-windows-static" CACHE STRING "")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>" CACHE STRING "" FORCE)
 
+# ---------------------------------------------------------------------------
+# Keep the builder's directory layout out of the shipped binary.
+#
+# __FILE__ and std::source_location bake the ABSOLUTE source path into the DLL,
+# and CommonLibSSE-NG's logging and assert macros use both heavily. A stock
+# build therefore ships the full path to whoever's checkout produced it - eight
+# of them in 1.1.0, e.g. "<somebody>\SKSE_Source\plugin.cpp". Harmless to the
+# game, and not something a public download should carry.
+#
+# /d1trimfile: is undocumented but stable, and is what the CommonLibSSE plugin
+# templates use for exactly this. It must be set BEFORE add_subdirectory:
+# add_compile_options only reaches subdirectories added AFTER the call, and most
+# of the leaked paths come from CommonLib's translation units rather than ours.
+# ---------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options("/d1trimfile:${CMAKE_CURRENT_SOURCE_DIR}/")
+endif()
+
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${CommonLibPath}/CMakeLists.txt")
     message(FATAL_ERROR
         "CommonLibSSE-NG is missing at ${CommonLibPath}.\n"
