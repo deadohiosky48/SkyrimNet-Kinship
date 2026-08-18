@@ -130,6 +130,11 @@ try {
     $docOut = Join-Path $stage 'Docs\SkyrimNet Kinship'
     New-Item -ItemType Directory -Force -Path $docOut | Out-Null
     Copy-Item (Join-Path $repo 'README.md') $docOut
+    # LICENSE ships too. The terms are reserved-rights with enumerated
+    # permissions rather than a permissive licence, so what a user may and may
+    # not do is no longer obvious from convention - it has to travel with the
+    # files rather than living only in a repository they may never visit.
+    Copy-Item (Join-Path $repo 'LICENSE') $docOut
 
     # --- 6. zip ------------------------------------------------------------
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
