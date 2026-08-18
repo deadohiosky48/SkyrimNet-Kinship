@@ -376,11 +376,26 @@ scripts, or write to SkyrimNet's SQLite database.
 
 ---
 
-## Licence
+## License and permissions
 
-[MIT](LICENSE) — covering **this mod's own code**: the `SNKin_*` Papyrus
-scripts, the SKSE panel under `SKSE_Source/src`, the `0340_kinship.prompt`
-submodule, and the tooling.
+**Source-available, not open source** — see [LICENSE](LICENSE) for the full text.
+It covers **this mod's own code**: the `SNKin_*` Papyrus scripts, the SKSE panel
+under `SKSE_Source/src`, the `0340_kinship.prompt` submodule, and the tooling.
+
+Freely permitted, no need to ask: use it, modify your own copy, and publish
+patches, add-ons or translations that *require* this mod rather than containing
+it. **Interoperating is expressly permitted and encouraged** — read its
+StorageUtil keys (`SNKin_IsPlayerChild`, `SNKin_ChildrenByPlayer`,
+`SNKin_PlayerChildTotal`), call its decorators, build a mod that depends on it.
+None of that needs permission.
+
+Ask first for: redistributing it or a substantial part of it, publishing a
+modified version, or including its files in a collection or modpack. Permission
+is usually given quickly; the point is to keep one canonical version so users are
+not split across divergent copies.
+
+Not permitted: commercial use, or presenting the work as your own. Videos,
+streams, guides and reviews are all fine, including monetized ones.
 
 It does **not** cover the dependencies, which are each under their own terms
 and are deliberately **not redistributed here**. Four headers are vendored
