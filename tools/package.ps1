@@ -61,6 +61,14 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $stage 'Scripts') | Out-Null
     $pex | Copy-Item -Destination (Join-Path $stage 'Scripts')
 
+
+    # STRIP THE BUILD MACHINE'S IDENTITY. The Papyrus compiler writes the
+    # compiling account's username and the computer name into every .pex header.
+    # Nothing surfaces it and no text search finds it, because .pex is binary -
+    # so it shipped in this mod's first three releases before anyone noticed.
+    # Scrubbing the STAGED copies leaves the build output alone.
+    & (Join-Path $PSScriptRoot 'sanitize-pex.ps1') -Path (Join-Path $stage 'Scripts') -Recurse
+
     # --- 3. prompt, manifest, settings -------------------------------------
     Copy-Item (Join-Path $repo 'SKSE') $stage -Recurse -Force
 
@@ -135,6 +143,43 @@ try {
     # not do is no longer obvious from convention - it has to travel with the
     # files rather than living only in a repository they may never visit.
     Copy-Item (Join-Path $repo 'LICENSE') $docOut
+
+    # --- 5b. REFUSE TO SHIP THE BUILD MACHINE'S IDENTITY --------------------
+    # Section 3c reads text files only, which is exactly how the first releases of
+    # this mod shipped the build account's username and computer name: the Papyrus
+    # compiler stamps both into every .pex header, .pex is binary, and no text
+    # search can see it. sanitize-pex.ps1 above removes it; this proves it is gone,
+    # and covers every other file too - the .esl, anything added later.
+    #
+    # The tokens are read from the ENVIRONMENT, never written down. This script is
+    # published, so hardcoding the names to search for would itself be the leak,
+    # and would only ever protect one machine. Derived this way it protects
+    # whoever runs it.
+    $identity = @($env:USERNAME, $env:COMPUTERNAME, $env:USERDOMAIN) |
+        Where-Object { $_ -and $_.Length -ge 4 } | Sort-Object -Unique
+
+    $found = @()
+    foreach ($file in (Get-ChildItem $stage -Recurse -File)) {
+        # Latin-1 maps every byte to exactly one char, so a byte scan and a text
+        # scan are the same scan. UTF-8 would mangle high bytes and could split a
+        # match; ASCII would drop them.
+        # GetEncoding(28591) rather than ::Latin1 - the named property exists only
+        # in PowerShell 7, and this must run under Windows PowerShell 5.1 too,
+        # where it silently evaluates to null and takes the guard offline.
+        $text = [System.Text.Encoding]::GetEncoding(28591).GetString(
+                    [System.IO.File]::ReadAllBytes($file.FullName))
+        foreach ($token in $identity) {
+            if ($text.IndexOf($token, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $found += "$($file.Name) contains the build machine's identity"
+            }
+        }
+    }
+    if ($found) {
+        Write-Host ""
+        Write-Host "  REFUSING TO PACKAGE - build machine identity in shipped files:" -ForegroundColor Red
+        $found | Sort-Object -Unique | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        throw "Identifying strings would be published. Fix them, then re-run."
+    }
 
     # --- 6. zip ------------------------------------------------------------
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
