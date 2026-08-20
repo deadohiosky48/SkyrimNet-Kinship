@@ -452,6 +452,19 @@ Function CaptureFatherRef(Actor akMother, Int aiIndex, Bool abCurrent)
     If father == None
         Return
     EndIf
+    ; NOBODY FATHERS A CHILD ON THEMSELVES. FMR can leave the mother in her own
+    ; father slot after a futa self-insemination, and 1.0.4 clears only the
+    ; Current arrays for those records - LastFatherRef, which the fallback above
+    ; reads, keeps the stale self-reference.
+    ;
+    ; Capturing nothing is right. A blank father renders as someone the child
+    ; has not been told about; the mother named twice would render as
+    ; established fact that she bore a child to herself.
+    If father == akMother
+        Diag(LOG_WARN(), "Ignoring a father reference that is " + \
+            akMother.GetDisplayName() + " herself.")
+        Return
+    EndIf
     StorageUtil.SetFormValue(akMother, "SNKin_LiveFatherRef", father)
     Diag(LOG_DEBUG(), "Captured father reference " + father.GetDisplayName() + \
         " for " + akMother.GetDisplayName() + ".")
@@ -1030,6 +1043,26 @@ Function RecordChild(String asName, String asGender, String asRace, String asFmr
     ; schema 3 existed to remove. Gaius shipped that way.
     If fatherId == 0 && father != "" && father == player.GetDisplayName()
         fatherId = player.GetFormID()
+    EndIf
+
+    ; A CHILD CANNOT HAVE THE SAME PARENT TWICE. SetParentStatic refuses this on
+    ; the manual path; nothing refused it here, and the automatic path can reach
+    ; it - every rung of the ladder above can yield the mother. FMR's father
+    ; slots can hold her after a futa self-insemination, and asFmrFather is
+    ; whatever FMR stored.
+    ;
+    ; Belt and braces to CaptureFatherRef's own check, deliberately: that one
+    ; only sees the reference, and the NAME arrives by three other routes.
+    ;
+    ; Blank, never the mother. An unknown father reads as someone the child has
+    ; not been told about, which is true; naming her twice would render in the
+    ; child's own bio as established fact that she bore a child to herself.
+    If (fatherId != 0 && fatherId == motherId) || \
+       (father != "" && motherName != "" && father == motherName)
+        Diag(LOG_WARN(), "RecordChild: the father resolved to the mother (" + \
+            motherName + ") for '" + asName + "' - recording him as unknown instead.")
+        father = ""
+        fatherId = 0
     EndIf
 
     ; Append to the roster FIRST - the index it lands at is the record key.
