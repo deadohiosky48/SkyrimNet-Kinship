@@ -27,6 +27,13 @@ Each of these was confirmed against a live save rather than reasoned about.
 - **Tie shortlists.** Two mothers matured about a game minute apart; both
   children were recorded with a two-candidate shortlist rather than a guess.
   This is the failing-closed rule doing exactly its job.
+- **The per-save split.** A second character claimed a store of their own; the
+  original save kept the file it had already claimed. Both exist on disk.
+- **The Papyrus contract closing a real fail-open.** One child had an actor in
+  the world, had followed the player, and was absent from Fertility Mode's
+  reference cache - so `SNKin_Bound` read 0 and always would have. She now
+  reads `IsPlayerChild=1 Bound=0`, which is the whole reason the contract
+  exists rather than reusing the binding flag.
 
 ## Not yet exercised
 
@@ -35,9 +42,44 @@ Each of these was confirmed against a live save rather than reasoned about.
   that way. This is the largest untested surface.
 - **The timeline warning.** Records dated after the current save point are
   detected and offered for deletion; no real rewind has yet triggered it.
-- **A second playthrough claiming its own store.** The per-save split works in
-  principle - the first save claims the existing file, later ones get their own
-  - but only one save has ever claimed.
+
+---
+
+## Planned for 2.0
+
+### Store parents as plugin + local FormID, not a runtime FormID
+
+**The current model breaks silently on any load order change**, and it has
+already happened on the development save.
+
+A runtime FormID encodes the plugin's load order position in its top byte, and
+for a light plugin the top *three* hex digits. Add or remove a plugin and every
+ESL-sourced FormID shifts. Two hand-entered mothers - both `0xFE...` - became
+unresolvable after an unrelated mod was removed and re-added. Every
+vanilla-space mother on the same roster (`0x00...`) survived untouched, which is
+exactly the signature.
+
+Nothing was lost: the names are still stored, so the links are re-enterable by
+hand. But a parent link that quietly stops resolving, with no error and no
+warning, is the failure mode this mod exists to avoid.
+
+The fix is to store what `GetFormFromFile` takes - the source plugin's filename
+and the local FormID - and resolve at read time. That is load-order-independent
+by construction. It applies to `motherId`, `fatherId`, `child.N.refId`, the
+`parent.<id>.kids` reverse index and the `person.<id>` roster, so it is a schema
+migration rather than a patch, and 2.0 is the moment to do it: before life-stage
+data is layered on top of the same keys.
+
+Migration has to be lenient. A stale ESL FormID cannot be decoded after the fact
+- the index it referred to is gone - so existing records convert only where the
+FormID still resolves, and the rest fall back to the stored name, which is what
+`RepairParentIds` already does.
+
+### Life stages
+
+See the design discussion: stages are data rather than geometry, gated behind a
+config flag that is off by default, with the published Papyrus contract frozen
+across the whole rewrite.
 
 ---
 
@@ -88,3 +130,11 @@ The SKSE panel is the more natural home for it now that it exists.
   two identities, so the second child simply stays unbound.
 - **Forking cannot be disabled** on a public repository. That is inherent to
   public hosting, not a gap in the settings.
+- **The exported flag and the records live in different places.**
+  `SNKin_IsPlayerChild` is a StorageUtil value, so it lives in the co-save and
+  follows save state; the roster is a JsonUtil file, so it is per-install and
+  does not. Loading an earlier save reverts one and not the other. The sweep now
+  re-stamps every child with a recorded reference, so the flag is durable after
+  first contact - but a child who has never been resolved once still reads 0,
+  and that is inherent to a push-model flag over a set that cannot be
+  enumerated.

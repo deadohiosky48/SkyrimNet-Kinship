@@ -1981,6 +1981,29 @@ Function RefreshKinshipExports() Global
         If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
             RefreshParentCount(JsonUtil.GetIntValue(StoreFile(), "child." + i + ".motherId", 0))
             RefreshParentCount(JsonUtil.GetIntValue(StoreFile(), "child." + i + ".fatherId", 0))
+
+            ; RE-STAMP FROM THE STORED REFERENCE, because the flag and the
+            ; records live in different places and can disagree.
+            ;
+            ; SNKin_IsPlayerChild is a StorageUtil value, which lives in the
+            ; CO-SAVE and follows save state. The roster lives in a JsonUtil
+            ; file, which is per-install and does not. Load an earlier save and
+            ; the flag reverts while the record stays - measured, not theorised:
+            ; Toryy read IsPlayerChild=1 one session and 0 the next, having been
+            ; stamped by a conversation that the reloaded save predated.
+            ;
+            ; Bound children were never affected, because BindSpawnedChildren
+            ; re-stamps them every sweep. This does the same for everyone else,
+            ; using the refId MarkChildActor recorded the first time the child
+            ; was ever resolved. So the flag is durable after first contact
+            ; rather than needing a fresh conversation after every save load.
+            Int refId = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".refId", 0)
+            If refId != 0
+                Actor kid = Game.GetFormEx(refId) as Actor
+                If kid != None
+                    MarkChildActor(kid, i)
+                EndIf
+            EndIf
         EndIf
         i += 1
     EndWhile
