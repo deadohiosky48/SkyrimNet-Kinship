@@ -18,7 +18,7 @@ kinSeedExisting: true
 # already on the roster, computed from the birth stamp, and for anyone recorded
 # before this mod existed that stamp is when they were first SEEN rather than
 # born. Those are estimates and are correctable by hand.
-kinStagesEnabled: false
+kinStagesEnabled: true
 # Game days per stage. Deliberately independent of Fertility Mode's BabyDuration
 # - pacing that depends on another mod's global is pacing we do not control.
 #

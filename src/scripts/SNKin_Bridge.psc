@@ -807,6 +807,14 @@ Function SeedPass()
     EndIf
 
     JsonUtil.SetIntValue(StoreFile(), "seeded", 1)
+    ; WHEN, not just whether. Every child seeded in this pass gets `born` set to
+    ; this instant, because that is when the record was made - it says nothing
+    ; about their age. Life stages need to tell those apart from genuine births:
+    ; a child born at 177.9 really is a newborn, while twenty-three children all
+    ; born at 163.13 are one seeding batch of unknown ages wearing a timestamp.
+    ; Without this the two are indistinguishable and every seeded child has to
+    ; be planted by hand.
+    JsonUtil.SetFloatValue(StoreFile(), "seedAt", Utility.GetCurrentGameTime())
     JsonUtil.Save(StoreFile())
 EndFunction
 
@@ -1944,6 +1952,10 @@ String Function DumpExports()
                 "child." + i + ".motherId", 0))
             line += "  father " + ExportedParent(JsonUtil.GetIntValue(StoreFile(), \
                 "child." + i + ".fatherId", 0))
+            If StagesEnabled()
+                Int st = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".stage", -1)
+                line += "  stage " + StageName(st) + "/" + PlasticityFor(st)
+            EndIf
             Diag(LOG_INFO(), line)
         EndIf
         i += 1
@@ -2193,8 +2205,51 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
             JsonUtil.SetFloatValue(StoreFile(), "stagesEnabledAt", since)
             JsonUtil.Save(StoreFile())
         EndIf
-        If JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".born", 0.0) < since
+        ; PLANT ONLY WHAT THE SEEDING PASS INVENTED. A child recorded from a
+        ; real birth has a real birth stamp and should be computed from it -
+        ; measured on the development save, twenty-three children share one
+        ; timestamp to the hundredth of a day while every later record has its
+        ; own, so the seeding batch is exactly separable. Planting the lot would
+        ; declare a child born an hour ago a school-age child.
+        ;
+        ; seedAt is only written from this version on. An older store has none,
+        ; and then the fallback is the previous rule: anything predating the
+        ; moment stages were switched on gets planted.
+        Float seededAt = JsonUtil.GetFloatValue(StoreFile(), "seedAt", 0.0)
+        Float cutoff = since
+        If seededAt > 0.0
+            ; A WINDOW, NOT AN INSTANT, and both halves of that matter.
+            ;
+            ; SeedPass runs EARLIER IN THE SWEEP than NoteNewChildren, so seedAt
+            ; is stamped before the children it seeds are recorded - a bare
+            ; `born <= seedAt` would catch none of them. And the batch itself is
+            ; not instantaneous: on the development save twenty-three records
+            ; span 163.1332 to 163.1340, written across successive frames.
+            ;
+            ; 0.05 game days is about seventy game minutes. Comfortably wider
+            ; than a sweep, and far narrower than the gap to the first real
+            ; birth after it, which was 1.39 days. A genuine birth inside that
+            ; window would be planted rather than computed - correctable, and
+            ; rarer than the failure it prevents.
+            cutoff = seededAt + 0.05
+        EndIf
+        If JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".born", 0.0) <= cutoff
+            ; ENROL FROM EVIDENCE WHERE THERE IS ANY. Actor.IsChild is native
+            ; and settles the only question the engine can actually answer:
+            ; Skyrim has one child body and one adult body, so a spawned child
+            ; is visibly a child and a grown one is visibly not. That is enough
+            ; to stop a summoned, grown, once-following child being enrolled as
+            ; a toddler, which is the mistake that would actually be noticed.
+            ;
+            ; It cannot separate toddler from adolescent - nothing can, there is
+            ; no body for either - so a child-bodied actor falls to the
+            ; configured stage and the panel corrects the rest. Children with no
+            ; actor at all get the same default: unknowable, and it matters
+            ; least, because nothing renders a persona for them.
             Int planted = SkyrimNetApi.GetConfigInt(CFG(), "kinStageBackfill", 3)
+            If akKid != None && !akKid.IsChild()
+                planted = STAGE_ADULT()
+            EndIf
             PlantStage(aiIdx, planted)
             Diag(LOG_WARN(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
                 " predates life stages - planted as " + StageName(planted) + \
@@ -2204,6 +2259,26 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
     EndIf
 
     Int want = StageForChild(aiIdx)
+
+    ; NEVER CLAIM A STAGE THE VISIBLE BODY CONTRADICTS.
+    ;
+    ; Fertility Mode spawns a child-bodied actor at its own BabyDuration, which
+    ; is ten game days by default - shorter than newborn plus infant here. So a
+    ; child who is visibly walking around would be recorded as an infant for a
+    ; further week, and that renders in their own bio as fact while the player
+    ; is looking straight at them.
+    ;
+    ; A newborn is a carried item, not a body. So the moment there IS a
+    ; child-bodied actor the child is at least a toddler, and an adult-bodied
+    ; one is an adult whatever the arithmetic says. The clock governs the stages
+    ; the engine cannot show; the body wins wherever it can.
+    If akKid != None
+        If !akKid.IsChild()
+            want = STAGE_ADULT()
+        ElseIf want < 2
+            want = 2
+        EndIf
+    EndIf
     If want != have
         JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".stage", want)
         JsonUtil.SetFloatValue(StoreFile(), "child." + aiIdx + ".stageAt", \
