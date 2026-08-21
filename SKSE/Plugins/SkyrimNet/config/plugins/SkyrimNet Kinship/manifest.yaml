@@ -47,6 +47,55 @@ schema:
       defaultValue: true
       category: "General"
 
+    - name: "Life Stages"
+      path: "kinStagesEnabled"
+      type: "bool"
+      description: "Let children age through newborn, infant, toddler, child and adolescent before adulthood, instead of jumping straight from birth to grown. Off by default. Turning it on plants every child already on the roster at the stage set below, because their recorded birth date is when this mod first saw them rather than when they were born - computing from it would call a grown child a newborn. They age on normally from wherever they are planted, and individuals can be corrected in the panel."
+      defaultValue: false
+      category: "Life Stages"
+
+    - name: "Newborn Duration (game days)"
+      path: "kinStageNewbornDays"
+      type: "string"
+      description: "How long a child stays a newborn. Keep this under Fertility Mode's own Baby Duration if you are using its carried baby item, or it will mature the child out from under you."
+      defaultValue: "3.0"
+      category: "Life Stages"
+
+    - name: "Infant Duration (game days)"
+      path: "kinStageInfantDays"
+      type: "string"
+      description: "How long a child stays an infant."
+      defaultValue: "14.0"
+      category: "Life Stages"
+
+    - name: "Toddler Duration (game days)"
+      path: "kinStageToddlerDays"
+      type: "string"
+      description: "How long a child stays a toddler. Values bend most easily around here - see the mod's notes on plasticity."
+      defaultValue: "30.0"
+      category: "Life Stages"
+
+    - name: "Child Duration (game days)"
+      path: "kinStageChildDays"
+      type: "string"
+      description: "How long a child stays a child. The longest stage by default, and the one most of a childhood is actually spent in."
+      defaultValue: "90.0"
+      category: "Life Stages"
+
+    - name: "Adolescent Duration (game days)"
+      path: "kinStageAdolescentDays"
+      type: "string"
+      description: "How long a child stays an adolescent before reaching adulthood."
+      defaultValue: "60.0"
+      category: "Life Stages"
+
+    - name: "Stage For Existing Children"
+      path: "kinStageBackfill"
+      type: "string"
+      description: "The stage to plant children who already existed when life stages were switched on. Their recorded birth date is when this mod first saw them, not when they were born, so computing a stage from it would call a grown child a newborn. 0 newborn, 1 infant, 2 toddler, 3 child, 4 adolescent, 5 adult. Correct individuals in the panel afterwards."
+      defaultValue: "3"
+      category: "Life Stages"
+
     - name: "Assign Parent Hotkey"
       path: "kinHotkey"
       type: "string"

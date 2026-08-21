@@ -14,6 +14,24 @@ kinEnabled: true
 # Ganna mature 0.00035 game days apart, which no interval separates.
 kinPollHours: 1.0
 kinSeedExisting: true
+# Life stages. OFF by default: switching it on backfills a stage for every child
+# already on the roster, computed from the birth stamp, and for anyone recorded
+# before this mod existed that stamp is when they were first SEEN rather than
+# born. Those are estimates and are correctable by hand.
+kinStagesEnabled: false
+# Game days per stage. Deliberately independent of Fertility Mode's BabyDuration
+# - pacing that depends on another mod's global is pacing we do not control.
+#
+# Keep Newborn UNDER FMR's Baby Duration if the carried baby item is in play, or
+# FMR reaches its own maturation first and spawns the child out from under us.
+# Where children who predate the feature get planted. 3 = child. They age on
+# from there rather than being frozen; correct individuals in the panel.
+kinStageBackfill: 3
+kinStageNewbornDays: 3.0
+kinStageInfantDays: 14.0
+kinStageToddlerDays: 30.0
+kinStageChildDays: 90.0
+kinStageAdolescentDays: 60.0
 # Left Shift + 9.
 #
 # 10 IS THE '9' KEY, NOT 9. DirectX scan codes for the digit row are offset by

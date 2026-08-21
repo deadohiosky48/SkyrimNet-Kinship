@@ -1998,16 +1998,229 @@ Function RefreshKinshipExports() Global
             ; was ever resolved. So the flag is durable after first contact
             ; rather than needing a fresh conversation after every save load.
             Int refId = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".refId", 0)
+            Actor kid = None
             If refId != 0
-                Actor kid = Game.GetFormEx(refId) as Actor
+                kid = Game.GetFormEx(refId) as Actor
                 If kid != None
                     MarkChildActor(kid, i)
                 EndIf
             EndIf
+            ; Ages the record whether or not the child has an actor, and stamps
+            ; the actor when there is one. Most of the player's children never
+            ; spawn an NPC at all and they still grow up.
+            RefreshChildStage(i, kid)
         EndIf
         i += 1
     EndWhile
     RefreshChildTotal()
+EndFunction
+
+; ===========================================================================
+; LIFE STAGES
+;
+; A stage is DATA, not geometry. Skyrim has child races and adult races and
+; nothing between, so there is no body for a toddler or an adolescent - but a
+; stage does not need one. It needs a record and a persona, and SkyrimNet gives
+; distinct personas to distinct references even when they share an ActorBase.
+; Two of the player's sons, engine-identical in every rendered respect, already
+; play as different people.
+;
+; Off by default. Everything here is inert unless kinStagesEnabled is set, so
+; an existing install updating into this sees exactly what it had.
+;
+; Published for consumers:
+;   SNKin_ChildStage       Int, per actor. 0 newborn .. 5 adult.
+;   SNKin_ChildPlasticity  Int, per actor. 0-100, how far this child's values
+;                          can still be moved by the people around them.
+;
+; PLASTICITY IS THE POINT OF HAVING STAGES AT ALL. Without it a stage is a
+; label; with it, childhood is a WINDOW - values bend early and set later, so
+; when you try to shape a child matters as much as whether you try. What a
+; child actually values is not ours to hold: that belongs to whichever mod
+; models disposition, exactly as knowledge belongs to whichever mod models
+; perception. This publishes how movable they are and stays out of the rest.
+; ===========================================================================
+
+Int Function STAGE_ADULT() Global
+    Return 5
+EndFunction
+
+Bool Function StagesEnabled() Global
+    Return SkyrimNetApi.GetConfigBool(CFG(), "kinStagesEnabled", False)
+EndFunction
+
+String Function StageName(Int aiStage) Global
+    If aiStage <= 0
+        Return "newborn"
+    ElseIf aiStage == 1
+        Return "infant"
+    ElseIf aiStage == 2
+        Return "toddler"
+    ElseIf aiStage == 3
+        Return "child"
+    ElseIf aiStage == 4
+        Return "adolescent"
+    EndIf
+    Return "adult"
+EndFunction
+
+Float Function StageDurationDays(Int aiStage) Global
+    ; GAME DAYS PER STAGE, and deliberately NOT derived from FMR's BabyDuration.
+    ; Pacing that depends on another mod's global is pacing we do not control -
+    ; the same coupling the parent records were pulled out of.
+    If aiStage == 0
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinStageNewbornDays", 3.0)
+    ElseIf aiStage == 1
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinStageInfantDays", 14.0)
+    ElseIf aiStage == 2
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinStageToddlerDays", 30.0)
+    ElseIf aiStage == 3
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinStageChildDays", 90.0)
+    ElseIf aiStage == 4
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinStageAdolescentDays", 60.0)
+    EndIf
+    Return 0.0
+EndFunction
+
+Int Function PlasticityFor(Int aiStage) Global
+    ; 0-100. Not a probability - a weight a consumer scales its own odds by, so
+    ; it can decide what "hard to change" means for its own data.
+    ;
+    ; Never reaches 0. An adult who cannot be moved at all by anyone is a rock,
+    ; not a person, and it would make every attempt on a grown child pointless
+    ; rather than difficult.
+    If aiStage <= 1
+        Return 100
+    ElseIf aiStage == 2
+        Return 90
+    ElseIf aiStage == 3
+        Return 70
+    ElseIf aiStage == 4
+        Return 40
+    EndIf
+    Return 10
+EndFunction
+
+Int Function StageForChild(Int aiIdx) Global
+    ; The stage this child SHOULD be at, from its birth stamp.
+    ;
+    ; A manual lock wins outright. Every other record in this store is
+    ; correctable by hand and this is no different - a seeded child's "born" is
+    ; when it was first RECORDED, not when it was born, so the computed stage
+    ; for anyone predating the mod is a guess and needs an override available.
+    Int lock = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".stageLock", -1)
+    If lock >= 0
+        Return lock
+    EndIf
+    ; AGING RUNS FROM stageBase AT stageFloor, NOT FROM born AT NEWBORN.
+    ;
+    ; born is when the record was CREATED, which for every child that predates
+    ; this mod is the moment it was first seen. Measured on the development
+    ; save: all thirty-three children computed as newborn or infant, including
+    ; one who is a grown adult and has followed the player. The birth stamp was
+    ; not missing, it was confidently wrong, so no default could catch it.
+    ;
+    ; So a child can be planted at a stage and age onward from there. Seeded
+    ; children get planted once, at a stage the player chooses; children born
+    ; while this mod is watching fall through to born at newborn, which is
+    ; genuinely true for them.
+    Float base = JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".stageBase", 0.0)
+    Int floorStage = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".stageFloor", 0)
+    If base <= 0.0
+        base = JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".born", 0.0)
+        floorStage = 0
+    EndIf
+    If base <= 0.0
+        ; No usable stamp at all. Adult, not newborn - failing the other way
+        ; hands a grown child an infant's persona on a missing float, and that
+        ; renders in their own bio as fact.
+        Return STAGE_ADULT()
+    EndIf
+    Float age = Utility.GetCurrentGameTime() - base
+    If age < 0.0
+        ; Dated after the current save point - a rewind. The timeline check owns
+        ; that decision; here it just means no time has passed yet.
+        Return floorStage
+    EndIf
+    Float elapsed = 0.0
+    Int s = floorStage
+    While s < STAGE_ADULT()
+        elapsed += StageDurationDays(s)
+        If age < elapsed
+            Return s
+        EndIf
+        s += 1
+    EndWhile
+    Return STAGE_ADULT()
+EndFunction
+
+Function PlantStage(Int aiIdx, Int aiStage) Global
+    ; Places a child at a stage NOW and lets it age on from there. This is what
+    ; a seeded child needs and what the panel will call to correct one by hand:
+    ; not a lock, because a locked child never grows up, which is the wrong
+    ; answer in a mod about children growing up.
+    If aiIdx < 0 || aiStage < 0 || aiStage > STAGE_ADULT()
+        Return
+    EndIf
+    JsonUtil.SetFloatValue(StoreFile(), "child." + aiIdx + ".stageBase", \
+        Utility.GetCurrentGameTime())
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".stageFloor", aiStage)
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".stage", aiStage)
+    JsonUtil.Save(StoreFile())
+EndFunction
+
+Function RefreshChildStage(Int aiIdx, Actor akKid) Global
+    ; Advances the stored stage if it has moved on, and publishes both keys.
+    ; akKid may be None - a child with no actor still ages in the record.
+    If !StagesEnabled()
+        Return
+    EndIf
+    Int have = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".stage", -1)
+
+    ; FIRST CONTACT WITH A CHILD THAT PREDATES THE FEATURE: plant it, do not
+    ; compute it. Its birth stamp is when the record was made, so computing
+    ; would declare a grown child a newborn - the exact failure the development
+    ; save produced across the whole roster.
+    ;
+    ; A child born while stages were already running has a real birth stamp and
+    ; a stageBase is unnecessary; it falls through to born at newborn, which is
+    ; true. So the test is whether the record predates the moment stages were
+    ; switched on, not whether it predates the mod.
+    If have < 0 && JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".stageBase", 0.0) <= 0.0
+        Float since = JsonUtil.GetFloatValue(StoreFile(), "stagesEnabledAt", 0.0)
+        If since <= 0.0
+            since = Utility.GetCurrentGameTime()
+            JsonUtil.SetFloatValue(StoreFile(), "stagesEnabledAt", since)
+            JsonUtil.Save(StoreFile())
+        EndIf
+        If JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".born", 0.0) < since
+            Int planted = SkyrimNetApi.GetConfigInt(CFG(), "kinStageBackfill", 3)
+            PlantStage(aiIdx, planted)
+            Diag(LOG_WARN(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+                " predates life stages - planted as " + StageName(planted) + \
+                ". Correct it in the panel if that is wrong; their recorded birth " + \
+                "date is when this mod first saw them, not when they were born.")
+        EndIf
+    EndIf
+
+    Int want = StageForChild(aiIdx)
+    If want != have
+        JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".stage", want)
+        JsonUtil.SetFloatValue(StoreFile(), "child." + aiIdx + ".stageAt", \
+            Utility.GetCurrentGameTime())
+        JsonUtil.Save(StoreFile())
+        ; Only announce a genuine advance. have == -1 is the first sweep after
+        ; the feature is switched on, when every child gets a stage at once -
+        ; that is a backfill, not thirty-three children growing up tonight.
+        If have >= 0
+            Diag(LOG_INFO(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+                " is now " + StageName(want) + " (was " + StageName(have) + ").")
+        EndIf
+    EndIf
+    If akKid != None
+        StorageUtil.SetIntValue(akKid, "SNKin_ChildStage", want)
+        StorageUtil.SetIntValue(akKid, "SNKin_ChildPlasticity", PlasticityFor(want))
+    EndIf
 EndFunction
 
 Int Function PersonIdByName(String asName) Global
@@ -2621,8 +2834,14 @@ Int Function SCHEMA() Global
 
       2 -> 3 made the model PARENT-AGNOSTIC. Before it, a mother had a FormID
       and a reverse index while a father had only a name, so only mothers could
-      be asked about their children. }
-    Return 3
+      be asked about their children.
+
+      3 -> 4 added life stages. PURELY ADDITIVE, so it needs no migration code:
+      stage, stageAt and stageLock are simply absent on an older store, every
+      read supplies a default, and the first sweep backfills them from each
+      child's birth stamp. MigrateStore falls through both of its branches for
+      have == 3 and writes the new number, which is exactly right. }
+    Return 4
 EndFunction
 
 String Function ParentPath(Int aiFormID) Global
