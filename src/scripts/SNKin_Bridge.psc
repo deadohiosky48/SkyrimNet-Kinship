@@ -2247,7 +2247,16 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
             ; actor at all get the same default: unknowable, and it matters
             ; least, because nothing renders a persona for them.
             Int planted = SkyrimNetApi.GetConfigInt(CFG(), "kinStageBackfill", 3)
-            If akKid != None && !akKid.IsChild()
+            ; ONLY TRUST THE BODY WHEN THERE IS ONE LOADED. IsChild reads the
+            ; actor's race off its 3D; with the actor unloaded it answers False,
+            ; which is indistinguishable from "grown" unless we ask separately.
+            ;
+            ; The first live run planted two bound, child-bodied daughters as
+            ; ADULTS for exactly this reason - they were simply somewhere else
+            ; at the time. Reading a false negative as evidence of adulthood is
+            ; the fail-dangerous direction: it ages children permanently on the
+            ; strength of them being out of the cell.
+            If akKid != None && akKid.Is3DLoaded() && !akKid.IsChild()
                 planted = STAGE_ADULT()
             EndIf
             PlantStage(aiIdx, planted)
@@ -2272,11 +2281,27 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
     ; child-bodied actor the child is at least a toddler, and an adult-bodied
     ; one is an adult whatever the arithmetic says. The clock governs the stages
     ; the engine cannot show; the body wins wherever it can.
-    If akKid != None
+    ; Only while the body is actually loaded - see the note in the plant branch.
+    ; An unloaded actor answers IsChild False and would age a child permanently.
+    If akKid != None && akKid.Is3DLoaded()
         If !akKid.IsChild()
             want = STAGE_ADULT()
         ElseIf want < 2
             want = 2
+        ElseIf want == STAGE_ADULT()
+            ; SELF-HEAL A CHILD WRONGLY AGED. A child-bodied actor recorded as
+            ; an adult is a contradiction the player can see, and it is the
+            ; exact wreckage the unloaded-IsChild bug left behind. Demote to the
+            ; configured stage and let the clock carry them forward again.
+            Int back = SkyrimNetApi.GetConfigInt(CFG(), "kinStageBackfill", 3)
+            If back >= STAGE_ADULT()
+                back = 3
+            EndIf
+            Diag(LOG_WARN(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+                " is recorded as an adult but has a child's body - correcting to " + \
+                StageName(back) + ".")
+            PlantStage(aiIdx, back)
+            want = back
         EndIf
     EndIf
     If want != have
