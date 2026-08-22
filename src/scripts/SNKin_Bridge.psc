@@ -2247,16 +2247,24 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
             ; actor at all get the same default: unknowable, and it matters
             ; least, because nothing renders a persona for them.
             Int planted = SkyrimNetApi.GetConfigInt(CFG(), "kinStageBackfill", 3)
-            ; ONLY TRUST THE BODY WHEN THERE IS ONE LOADED. IsChild reads the
-            ; actor's race off its 3D; with the actor unloaded it answers False,
-            ; which is indistinguishable from "grown" unless we ask separately.
+            ; A BOUND CHILD IS AN ADULT, and this is the strongest signal there
+            ; is - stronger than the body, because it does not need the actor
+            ; loaded to be true.
             ;
-            ; The first live run planted two bound, child-bodied daughters as
-            ; ADULTS for exactly this reason - they were simply somewhere else
-            ; at the time. Reading a false negative as evidence of adulthood is
-            ; the fail-dangerous direction: it ages children permanently on the
-            ; strength of them being out of the cell.
-            If akKid != None && akKid.Is3DLoaded() && !akKid.IsChild()
+            ; SpawnedChildActorRefs is declared "1:1 with AdultChildren indices"
+            ; and is written in exactly one place: SummonAdultChild, which takes
+            ; its base from Storage.AdultChildren. So an actor in that array is
+            ; a child who went away for training and came back grown. Kinship
+            ; only ever calls BindChildRef on actors from that array, so
+            ; SNKin_Bound == 1 means precisely "summoned adult".
+            ;
+            ; The body is the fallback, and only while it is LOADED: IsChild
+            ; reads the race off the actor's 3D, so an unloaded actor answers
+            ; False, which is indistinguishable from grown. Believing that would
+            ; age a child permanently for being out of the cell.
+            If akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1
+                planted = STAGE_ADULT()
+            ElseIf akKid != None && akKid.Is3DLoaded() && !akKid.IsChild()
                 planted = STAGE_ADULT()
             EndIf
             PlantStage(aiIdx, planted)
@@ -2281,27 +2289,30 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
     ; child-bodied actor the child is at least a toddler, and an adult-bodied
     ; one is an adult whatever the arithmetic says. The clock governs the stages
     ; the engine cannot show; the body wins wherever it can.
-    ; Only while the body is actually loaded - see the note in the plant branch.
-    ; An unloaded actor answers IsChild False and would age a child permanently.
-    If akKid != None && akKid.Is3DLoaded()
+    ; EVIDENCE BEATS THE CLOCK, in the order it can be trusted.
+    Bool grown = False
+    If akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1
+        ; Summoned adult - see the plant branch. Holds whether loaded or not.
+        grown = True
+    ElseIf akKid != None && akKid.Is3DLoaded()
+        ; Body as fallback, and ONLY while it is loaded: an unloaded actor
+        ; answers IsChild False, which would age a child permanently.
         If !akKid.IsChild()
-            want = STAGE_ADULT()
+            grown = True
         ElseIf want < 2
+            ; A newborn is a carried item, not a body. Once there is a
+            ; child-bodied actor the child is at least a toddler.
             want = 2
-        ElseIf want == STAGE_ADULT()
-            ; SELF-HEAL A CHILD WRONGLY AGED. A child-bodied actor recorded as
-            ; an adult is a contradiction the player can see, and it is the
-            ; exact wreckage the unloaded-IsChild bug left behind. Demote to the
-            ; configured stage and let the clock carry them forward again.
-            Int back = SkyrimNetApi.GetConfigInt(CFG(), "kinStageBackfill", 3)
-            If back >= STAGE_ADULT()
-                back = 3
-            EndIf
-            Diag(LOG_WARN(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
-                " is recorded as an adult but has a child's body - correcting to " + \
-                StageName(back) + ".")
-            PlantStage(aiIdx, back)
-            want = back
+        EndIf
+    EndIf
+    If grown
+        want = STAGE_ADULT()
+        ; MAKE IT STICK. Without this the clock keeps computing a younger stage
+        ; from the birth stamp, the evidence keeps overriding it, and the store
+        ; is rewritten every single sweep. Planting moves the floor so the two
+        ; agree from now on.
+        If JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".stageFloor", 0) != STAGE_ADULT()
+            PlantStage(aiIdx, STAGE_ADULT())
         EndIf
     EndIf
     If want != have
