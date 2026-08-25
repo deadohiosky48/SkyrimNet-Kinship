@@ -558,6 +558,10 @@ Function Sweep()
     _sweeping = True
 
     MigrateStore()
+    ; AFTER the schema migration, which may already have swept, and before
+    ; anything reads a parent id. A reshuffled load order breaks records
+    ; silently; this is the only thing that notices.
+    CheckLoadOrderDrift()
     SeedPass()
     RememberPeople()
     ; AFTER RememberPeople, never before: it resolves names against the roster,
@@ -693,6 +697,42 @@ Function AppendPerson(Actor akActor) Global
     ; failed IntListFind cannot admit a duplicate.
     If JsonUtil.GetStringValue(StoreFile(), "person." + id + ".name", "") != ""
         Return
+    EndIf
+
+    ; AND THE SAME FORM UNDER A DIFFERENT RUNTIME ID. A light plugin's FormID
+    ; encodes its load order position, so adding or removing any mod renumbers
+    ; every ESL-sourced form and this function would file the same follower
+    ; again. One accumulated four entries that way, three of them unusable.
+    ;
+    ; Keyed on name plus LOCAL id: the local is arithmetic on the id and holds
+    ; across any load order, while the plugin name needs a live lookup that a
+    ; stale index answers wrongly. O(1), because the alternative is scanning
+    ; two hundred people on every add.
+    String pk = "pkey." + akActor.GetDisplayName() + "." + LocalFormId(id)
+    If IsLightFormId(id)
+        pk += ".L"
+    EndIf
+    Int known = JsonUtil.GetIntValue(StoreFile(), pk, 0)
+    If known != 0 && known != id && Game.GetFormEx(known) != None
+        Return
+    EndIf
+    JsonUtil.SetIntValue(StoreFile(), pk, id)
+
+    ; THE SOURCE PLUGIN, CAPTURED NOW WHILE THE FORM IS STILL ALIVE.
+    ;
+    ; This is the whole difference between a repairable record and a lost one. A
+    ; dead FormID cannot be decoded after the fact - its index names whatever mod
+    ; occupies that slot today, and three dead entries for one follower decoded
+    ; to cowperktree.esp, companionsskillltree.esp and mawassets.esp. Written
+    ; here, the pair survives any reshuffle and repair becomes a direct lookup
+    ; rather than a search for a surviving twin.
+    ;
+    ; Runtime spawns get "" and are skipped: they have no source file and cannot
+    ; outlive the save anyway.
+    String plug = SourcePlugin(id)
+    If plug != ""
+        JsonUtil.SetStringValue(StoreFile(), "person." + id + ".plugin", plug)
+        JsonUtil.SetIntValue(StoreFile(), "person." + id + ".local", LocalFormId(id))
     EndIf
     Int sex = -1
     If akActor.GetActorBase() != None
@@ -1305,6 +1345,304 @@ Actor Function ClaimAwaitingMother()
     StorageUtil.SetIntValue(best, "SNKin_Awaiting", 0)
     WatchRemove(best)
     Return best
+EndFunction
+
+; ===========================================================================
+; DURABLE FORM IDENTITY
+;
+; A runtime FormID is NOT a durable identity. Its top byte is the plugin's
+; position in the load order, and for a light plugin the top THREE hex digits
+; are - so adding or removing any mod shifts every ESL-sourced FormID.
+;
+; This is not theoretical. Two hand-entered mothers became unresolvable after an
+; unrelated plugin was added and removed, while every vanilla-space parent on the
+; same roster survived untouched. And the people roster accumulated FOUR entries
+; for one follower, one per load order the game had seen, because AppendPerson
+; keys on the runtime id and each shift looked like a new person.
+;
+; The durable pair is the source plugin's FILENAME plus the LOCAL id within it -
+; exactly what GetFormFromFile takes. That survives any load order.
+;
+; Papyrus Ints are SIGNED, so a FormID above 0x7FFFFFFF is negative and a plain
+; RightShift sign-extends. Every shift below is masked afterwards for that reason.
+; ===========================================================================
+
+Bool Function IsLightFormId(Int aiFormID) Global
+    ; 0xFE in the top byte marks a light (ESL) plugin.
+    Return Math.LogicalAnd(Math.RightShift(aiFormID, 24), 0xFF) == 0xFE
+EndFunction
+
+String Function SourcePlugin(Int aiFormID) Global
+    ; The filename the form came from, or "" when it has none.
+    ;
+    ; A 0xFF form is a RUNTIME SPAWN with no source file at all - every Fertility
+    ; Mode child is one - so those get "" and keep using the raw id, which is
+    ; correct: they are per-save by nature and cannot outlive it anyway.
+    Int top = Math.LogicalAnd(Math.RightShift(aiFormID, 24), 0xFF)
+    If top == 0xFF
+        Return ""
+    EndIf
+    If top == 0xFE
+        Return Game.GetLightModName(Math.LogicalAnd(Math.RightShift(aiFormID, 12), 0xFFF))
+    EndIf
+    Return Game.GetModName(top)
+EndFunction
+
+Int Function LocalFormId(Int aiFormID) Global
+    ; The id WITHIN its plugin: 12 bits for a light plugin, 24 otherwise.
+    If IsLightFormId(aiFormID)
+        Return Math.LogicalAnd(aiFormID, 0xFFF)
+    EndIf
+    Return Math.LogicalAnd(aiFormID, 0xFFFFFF)
+EndFunction
+
+Int Function ResolveFormId(String asPlugin, Int aiLocal) Global
+    ; Back to a runtime FormID under the CURRENT load order, or 0.
+    If asPlugin == "" || aiLocal == 0
+        Return 0
+    EndIf
+    Form f = Game.GetFormFromFile(aiLocal, asPlugin)
+    If f == None
+        Return 0
+    EndIf
+    Return f.GetFormID()
+EndFunction
+
+Int Function LivePersonTwin(Int aiDeadId) Global
+    ; The live roster entry for the SAME form as a dead id, or 0.
+    ;
+    ; Matched on NAME plus LOCAL id, never on the decoded plugin. The local is
+    ; pure arithmetic on the id and stays true however the load order moves; the
+    ; plugin NAME is a lookup against the current order, so a dead index names
+    ; whatever mod occupies that slot today. Measured: three dead Fenja entries
+    ; decode to cowperktree.esp, companionsskillltree.esp and mawassets.esp.
+    ; Trusting that would have written a cow perk as somebody's mother.
+    ;
+    ; The light/regular kind must match too, or a vanilla 0x000814 and an ESL
+    ; local 0x814 would look like the same form.
+    ; THE CAPTURED PAIR FIRST, when there is one. Recorded while the form was
+    ; alive, so it needs no surviving twin and cannot be fooled by a reshuffled
+    ; index - this is the path every record written from now on will take.
+    String kept = JsonUtil.GetStringValue(StoreFile(), "person." + aiDeadId + ".plugin", "")
+    If kept != ""
+        Int direct = ResolveFormId(kept, JsonUtil.GetIntValue(StoreFile(), "person." + aiDeadId + ".local", 0))
+        If direct != 0 && direct != aiDeadId
+            Return direct
+        EndIf
+    EndIf
+
+    ; Otherwise fall back to finding a live twin. Everything written before the
+    ; pair was captured takes this route, matched on name plus LOCAL id - the
+    ; local is arithmetic and holds, the plugin name is a lookup a stale index
+    ; answers wrongly.
+    String nm = JsonUtil.GetStringValue(StoreFile(), "person." + aiDeadId + ".name", "")
+    If nm == ""
+        Return 0
+    EndIf
+    ; NOT "light" - Light is a Skyrim form type, and Papyrus refuses a local
+    ; named after one. Same trap as Race, Key and Parent elsewhere in this file.
+    Bool isLight = IsLightFormId(aiDeadId)
+    Int loc = LocalFormId(aiDeadId)
+    Int n = JsonUtil.IntListCount(StoreFile(), "people.ids")
+    Int i = 0
+    While i < n
+        Int other = JsonUtil.IntListGet(StoreFile(), "people.ids", i)
+        If other != aiDeadId && IsLightFormId(other) == isLight && LocalFormId(other) == loc
+            If JsonUtil.GetStringValue(StoreFile(), "person." + other + ".name", "") == nm
+                If Game.GetFormEx(other) != None
+                    Return other
+                EndIf
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    Return 0
+EndFunction
+
+Function RepointPerson(Int aiDeadId, Int aiLiveId) Global
+    ; Moves every reference from a dead FormID onto its live twin.
+    If aiDeadId == 0 || aiLiveId == 0 || aiDeadId == aiLiveId
+        Return
+    EndIf
+    ; CARRY THE RECORD ACROSS FIRST when the live id is new to the roster. A
+    ; twin already has its own record, but an id that came from re-resolving the
+    ; captured plugin pair has none - repointing to it without this would leave
+    ; every reference aimed at a person with no name, which renders as blank.
+    If JsonUtil.GetStringValue(StoreFile(), "person." + aiLiveId + ".name", "") == ""
+        JsonUtil.SetStringValue(StoreFile(), "person." + aiLiveId + ".name", \
+            JsonUtil.GetStringValue(StoreFile(), "person." + aiDeadId + ".name", ""))
+        JsonUtil.SetIntValue(StoreFile(), "person." + aiLiveId + ".sex", \
+            JsonUtil.GetIntValue(StoreFile(), "person." + aiDeadId + ".sex", -1))
+        JsonUtil.SetStringValue(StoreFile(), "person." + aiLiveId + ".plugin", \
+            JsonUtil.GetStringValue(StoreFile(), "person." + aiDeadId + ".plugin", ""))
+        JsonUtil.SetIntValue(StoreFile(), "person." + aiLiveId + ".local", \
+            JsonUtil.GetIntValue(StoreFile(), "person." + aiDeadId + ".local", 0))
+        JsonUtil.IntListAdd(StoreFile(), "people.ids", aiLiveId, False)
+    EndIf
+    ; Parent links on children.
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".motherId", 0) == aiDeadId
+            JsonUtil.SetIntValue(StoreFile(), "child." + i + ".motherId", aiLiveId)
+        EndIf
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".fatherId", 0) == aiDeadId
+            JsonUtil.SetIntValue(StoreFile(), "child." + i + ".fatherId", aiLiveId)
+        EndIf
+        i += 1
+    EndWhile
+    ; The reverse index, merged rather than replaced - the live id may already
+    ; own children of its own.
+    Int k = JsonUtil.IntListCount(StoreFile(), ParentPath(aiDeadId))
+    Int j = 0
+    While j < k
+        JsonUtil.IntListAdd(StoreFile(), ParentPath(aiLiveId), \
+            JsonUtil.IntListGet(StoreFile(), ParentPath(aiDeadId), j), False)
+        j += 1
+    EndWhile
+    JsonUtil.IntListClear(StoreFile(), ParentPath(aiDeadId))
+    ; And the person record itself.
+    JsonUtil.SetStringValue(StoreFile(), "person." + aiDeadId + ".name", "")
+    JsonUtil.IntListRemove(StoreFile(), "people.ids", aiDeadId, True)
+EndFunction
+
+Int Function RepairFormDrift() Global
+    ; Collapses roster entries that a load order change split into duplicates.
+    ;
+    ; A light plugin's FormID carries its load order position in the top three
+    ; hex digits, so adding or removing any mod rewrites every ESL-sourced id.
+    ; AppendPerson keyed on the raw id, so each shift looked like a new person -
+    ; one follower accumulated FOUR entries, of which three could never be
+    ; selected because the picker cannot resolve them to an Actor.
+    Int n = JsonUtil.IntListCount(StoreFile(), "people.ids")
+    Int repaired = 0
+    Int orphaned = 0
+    ; Downwards: RepointPerson removes entries, and walking up would skip the
+    ; element shifted into the slot just vacated.
+    Int i = n - 1
+    While i >= 0
+        Int id = JsonUtil.IntListGet(StoreFile(), "people.ids", i)
+        If id != 0 && Game.GetFormEx(id) == None
+            Int live = LivePersonTwin(id)
+            If live != 0
+                String nm = JsonUtil.GetStringValue(StoreFile(), "person." + id + ".name", "?")
+                RepointPerson(id, live)
+                repaired += 1
+                Diag(LOG_INFO(), "Drift: " + nm + " had a dead duplicate; folded it into the live record.")
+            Else
+                ; Dead with no live twin. LEFT ALONE - the person may simply not
+                ; be loaded in this playthrough, and deleting them would lose a
+                ; hand-entered parent link with nothing to put in its place.
+                orphaned += 1
+            EndIf
+        EndIf
+        i -= 1
+    EndWhile
+    If repaired > 0 || orphaned > 0
+        JsonUtil.Save(StoreFile())
+        Diag(LOG_WARN(), "Form drift repair: " + repaired + " duplicate(s) folded, " + \
+            orphaned + " dead entr(ies) with no live twin left untouched.")
+    EndIf
+    Return repaired
+EndFunction
+
+Int Function RepairDrift()
+    { Instance entry point for the web API. See RepairFormDrift. }
+    Return RepairFormDrift()
+EndFunction
+
+Int Function CountBrokenRecords() Global
+    ; How many recorded people no longer resolve. Drives the menu's count, so it
+    ; is a plain O(people) scan with no repair attempted and nothing written.
+    Int n = JsonUtil.IntListCount(StoreFile(), "people.ids")
+    Int broken = 0
+    Int i = 0
+    While i < n
+        Int id = JsonUtil.IntListGet(StoreFile(), "people.ids", i)
+        ; A runtime spawn that has gone is not "broken" - it is a dead reference
+        ; from a previous session and there is nothing to repair it to.
+        If id != 0 && SourcePlugin(id) != "" && Game.GetFormEx(id) == None
+            broken += 1
+        EndIf
+        i += 1
+    EndWhile
+    Return broken
+EndFunction
+
+Function CheckLoadOrderDrift() Global
+    ; Repairs the roster WHEN THE LOAD ORDER HAS ACTUALLY CHANGED, and does
+    ; nothing at all when it has not.
+    ;
+    ; This has to be continuous rather than a one-off migration: a light
+    ; plugin's FormID carries its load order position, so every mod a player
+    ; adds or removes renumbers every ESL-sourced form they have recorded. For
+    ; anyone running custom followers - which is most people with children by
+    ; NPCs - that is a routine event, not an edge case.
+    ;
+    ; But the repair is O(people^2) in the legacy path, and running that on
+    ; every sweep for two hundred people would be indefensible. The plugin
+    ; counts are two native calls and change whenever anything is added or
+    ; removed, so they gate the expensive work behind the only event that can
+    ; cause the damage.
+    ;
+    ; A pure REORDER with no count change slips through this. That is accepted:
+    ; it is rarer, it still gets caught by the next add or remove, and the
+    ; manual RepairDrift is there meanwhile. A cheap check that catches the
+    ; common case beats an expensive one that catches everything.
+    Int fp = Game.GetModCount() * 100000 + Game.GetLightModCount()
+    If fp == JsonUtil.GetIntValue(StoreFile(), "loadOrderFp", 0)
+        Return
+    EndIf
+    Int was = JsonUtil.GetIntValue(StoreFile(), "loadOrderFp", 0)
+    JsonUtil.SetIntValue(StoreFile(), "loadOrderFp", fp)
+    JsonUtil.Save(StoreFile())
+    If was == 0
+        ; First run on this store - nothing to compare against, and the schema
+        ; migration has already swept. Just record the fingerprint.
+        Return
+    EndIf
+    Diag(LOG_WARN(), "Load order changed since the last session - checking the " + \
+        "people roster for records the reshuffle broke.")
+    RepairFormDrift()
+EndFunction
+
+String Function DumpFormSources()
+    { Round-trip check for the durable pair, over the real people roster.
+
+      Proves the encoding BEFORE anything is stored on it: every person is
+      decomposed to plugin plus local id and resolved back, and any row where the
+      round trip does not return the original is a bug in the maths rather than
+      in the data. Rows that already fail to resolve are the ESL casualties. }
+    Int n = JsonUtil.IntListCount(StoreFile(), "people.ids")
+    Diag(LOG_INFO(), "--- form sources --- " + n + " people")
+    Int ok = 0
+    Int drift = 0
+    Int dead = 0
+    Int i = 0
+    While i < n
+        Int id = JsonUtil.IntListGet(StoreFile(), "people.ids", i)
+        String nm = JsonUtil.GetStringValue(StoreFile(), "person." + id + ".name", "?")
+        String plug = SourcePlugin(id)
+        Int loc = LocalFormId(id)
+        Int back = ResolveFormId(plug, loc)
+        String verdict = "ok"
+        If Game.GetFormEx(id) == None
+            verdict = "DEAD (id no longer resolves)"
+            dead += 1
+        ElseIf back == 0
+            verdict = "NO ROUND TRIP"
+            drift += 1
+        ElseIf back != id
+            verdict = "DRIFTED -> 0x" + back
+            drift += 1
+        Else
+            ok += 1
+        EndIf
+        Diag(LOG_INFO(), "  " + nm + "  id=0x" + id + "  plugin='" + plug + "' local=0x" + loc + "  " + verdict)
+        i += 1
+    EndWhile
+    Diag(LOG_INFO(), "--- end form sources --- ok=" + ok + " drifted=" + drift + " dead=" + dead)
+    Return "ok"
 EndFunction
 
 Function ClearPendingCandidates() Global
@@ -3015,12 +3353,19 @@ Int Function SCHEMA() Global
       and a reverse index while a father had only a name, so only mothers could
       be asked about their children.
 
+      4 -> 5 folds people-roster duplicates created by load order changes. A
+      light plugin's FormID encodes its position in the load order, so adding or
+      removing any mod renumbers every ESL-sourced form and the roster filed the
+      same follower again - one had four entries, three unselectable. Matched on
+      name plus LOCAL id, never the decoded plugin name: the local is arithmetic
+      and holds, the plugin name is a lookup a stale index answers wrongly.
+
       3 -> 4 added life stages. PURELY ADDITIVE, so it needs no migration code:
       stage, stageAt and stageLock are simply absent on an older store, every
       read supplies a default, and the first sweep backfills them from each
       child's birth stamp. MigrateStore falls through both of its branches for
       have == 3 and writes the new number, which is exactly right. }
-    Return 4
+    Return 5
 EndFunction
 
 String Function ParentPath(Int aiFormID) Global
@@ -3088,6 +3433,33 @@ Function MigrateStore()
         Return
     EndIf
 
+    ; A LOCK THAT CROSSES SCRIPT INSTANCES, which _sweeping does not.
+    ;
+    ; _sweeping is a member variable, so it guards one instance against itself
+    ; and nothing against anyone else. There is routinely more than one: the
+    ; quest OnInit, the alias OnInit and OnPlayerLoadGame all call Bootstrap
+    ; with abForce, and orphaned quest instances from an earlier install add
+    ; more. Eight concurrent sweeps were observed on the first live run.
+    ;
+    ; Measured again on the schema 4 -> 5 migration: two passes both read
+    ; schema 4 before either wrote 5, and the repair ran twice. That was
+    ; harmless only because RepairFormDrift is idempotent by construction - the
+    ; migration before it called ClearAll, and two of those interleaving would
+    ; have wiped what the other had just rebuilt.
+    ;
+    ; None-scoped StorageUtil is process-wide, so every instance sees the same
+    ; flag. Papyrus has no try/finally, so a holder that dies mid-migration
+    ; would deadlock the store forever - hence the staleness escape rather than
+    ; a bare boolean.
+    Float now = Utility.GetCurrentRealTime()
+    Float held = StorageUtil.GetFloatValue(None, "SNKin_MigrateLock", 0.0)
+    ; held > now means the value came from a previous session: real time counts
+    ; from launch and resets, the same trap the Bootstrap debounce documents.
+    If held > 0.0 && held <= now && (now - held) < 30.0
+        Return
+    EndIf
+    StorageUtil.SetFloatValue(None, "SNKin_MigrateLock", now)
+
     If have < 2
         Diag(LOG_WARN(), "Store schema " + have + " -> " + SCHEMA() + \
             ": keys unusable, rebuilding from Fertility Mode.")
@@ -3098,8 +3470,24 @@ Function MigrateStore()
         MigrateTwoToThree()
     EndIf
 
+    ; 2, 3 or 4 -> 5: fold roster duplicates a load order change created.
+    ;
+    ; Runs for any store old enough to have accumulated them, and is safe to run
+    ; twice: it only touches entries whose FormID no longer resolves AND that
+    ; have a live twin of the same form. Nothing is deleted without somewhere to
+    ; point the references.
+    If have >= 2 && have < 5
+        Diag(LOG_WARN(), "Store schema " + have + " -> 5: checking the people roster for " + \
+            "duplicates left by load order changes.")
+        RepairFormDrift()
+    EndIf
+
     JsonUtil.SetIntValue(StoreFile(), "schema", SCHEMA())
     JsonUtil.Save(StoreFile())
+    ; Released only after the schema is written, so a second instance arriving
+    ; now reads the new number and returns on the check above rather than on the
+    ; lock. The lock covers the window; the schema covers everything after it.
+    StorageUtil.SetFloatValue(None, "SNKin_MigrateLock", 0.0)
 EndFunction
 
 Function MigrateTwoToThree()

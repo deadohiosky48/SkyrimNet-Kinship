@@ -76,7 +76,8 @@ Function OpenMenu() Global
       handful of times has designed for the author, not the player. }
     Int pending = CountUnresolved()
     Int future = SNKin_Bridge.CountFutureChildren()
-    String[] actions = new String[5]
+    Int broken = SNKin_Bridge.CountBrokenRecords()
+    String[] actions = new String[6]
     ; Listed FIRST and with its count, because it is the only entry that is
     ; time-sensitive: an unresolved shortlist is a question the game already
     ; asked and is waiting on.
@@ -85,6 +86,11 @@ Function OpenMenu() Global
     actions[2] = "Assign someone tracked by Fertility Mode"
     actions[3] = "Show what is recorded"
     actions[4] = "Records from a later save (" + future + ")"
+    ; Carries its count so the entry answers its own question. Adding or
+    ; removing any light plugin renumbers every ESL-sourced form on the roster,
+    ; which for anyone running custom followers happens routinely - so this is a
+    ; normal maintenance action, not an emergency tool.
+    actions[5] = "Repair records broken by a load order change (" + broken + ")"
     Int pick = Pick("Kinship", actions)
     If pick == 0
         ResolveUncertain()
@@ -96,6 +102,36 @@ Function OpenMenu() Global
         ShowRoster()
     ElseIf pick == 4
         ReviewFuture()
+    ElseIf pick == 5
+        RepairRecords()
+    EndIf
+EndFunction
+
+Function RepairRecords() Global
+    { Folds roster entries a load order change split into duplicates.
+
+      Safe to run at any time and safe to run twice: it only touches records
+      whose FormID no longer resolves AND that have a live counterpart to point
+      at. Nothing is ever deleted without somewhere for its references to go. }
+    Int broken = SNKin_Bridge.CountBrokenRecords()
+    If broken == 0
+        Say("Nothing to repair - every recorded person still resolves.")
+        Return
+    EndIf
+    String[] confirm = new String[2]
+    confirm[0] = "Repair " + broken + " broken record(s)"
+    confirm[1] = "Leave them alone"
+    If Pick("Repair records?", confirm) != 0
+        Return
+    EndIf
+    Int fixedCount = SNKin_Bridge.RepairFormDrift()
+    If fixedCount > 0
+        Say(fixedCount + " record(s) repaired.")
+    Else
+        ; Every broken record was one whose person is simply not present in this
+        ; load order any more. Saying "0 repaired" without that explanation
+        ; reads as a failure rather than as nothing being wrong.
+        Say("No repairs possible - those people are not in this load order.")
     EndIf
 EndFunction
 
