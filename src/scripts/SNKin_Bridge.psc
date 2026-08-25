@@ -989,7 +989,16 @@ Function RecordChild(String asName, String asGender, String asRace, String asFmr
     ; the yes/no question it is named for.
     Form[] shortlist
     If mother == None
-        shortlist = MothersMaturedRecently(1.0)
+        ; THE TIE'S OWN LIST FIRST, written by ClaimAwaitingMother at the instant
+        ; it detected the tie. It needs nothing from FMR and no time window, so
+        ; it is right even when FMR has already moved on - the case that left
+        ; Almed with a logged tie and an empty shortlist.
+        shortlist = PendingCandidates()
+        If shortlist.Length == 0
+            ; Nothing was flagged. Fall back to reading who matured, which also
+            ; covers births the watch list never saw at all.
+            shortlist = MothersMaturedRecently(1.0)
+        EndIf
         If shortlist.Length == 1
             mother = shortlist[0] as Actor
             Diag(LOG_INFO(), "No single watched mother, but " + mother.GetDisplayName() + \
@@ -1248,14 +1257,40 @@ Actor Function ClaimAwaitingMother()
     EndWhile
 
     If found == 0
+        ClearPendingCandidates()
         Return None
     EndIf
     If tied > 0
-        ; FAILS CLOSED: no mother is written. The shortlist is NOT built here -
-        ; RecordChild derives it from MothersMaturedRecently at the point it is
-        ; written. Handing an array back through a member variable is exactly
-        ; what silently lost Danica and Nilsine's shortlists: the tie was
-        ; detected and logged, and the candidates arrived empty.
+        ; FAILS CLOSED on the mother, but the SHORTLIST IS WRITTEN HERE, to the
+        ; store, at the moment the tie is known.
+        ;
+        ; Two earlier designs both lost it. Handing the array back through a
+        ; member variable arrived empty and cost Danica and Nilsine theirs.
+        ; Re-deriving it in RecordChild from MothersMaturedRecently cured that
+        ; and introduced a different hole: the tie is detected from OUR durable
+        ; SNKin_Awaiting flags, while the derivation reads FMR's LastBirth and
+        ; only matches inside BabyDuration +/- tolerance. When those disagree the
+        ; tie is logged and the candidates are still empty - which is exactly how
+        ; Almed was recorded with no mother and no shortlist.
+        ;
+        ; A JsonUtil write needs no hand-off and no window. The evidence exists
+        ; right here; this is where it gets persisted.
+        JsonUtil.IntListClear(StoreFile(), "pending.candidates")
+        JsonUtil.StringListClear(StoreFile(), "pending.candidateNames")
+        Int c = 0
+        While c < nAwaiting
+            Actor cand = awaiting[c] as Actor
+            ; Only those tied at the earliest delivery. A mother who delivered
+            ; later is distinguishable and is not a candidate for THIS child.
+            If cand != None && StorageUtil.GetFloatValue(cand, "SNKin_AwaitingAt", 0.0) == bestAt
+                ; Duplicates allowed so the two lists stay index-aligned, the
+                ; same rule the per-child lists follow.
+                JsonUtil.IntListAdd(StoreFile(), "pending.candidates", cand.GetFormID(), True)
+                JsonUtil.StringListAdd(StoreFile(), "pending.candidateNames", cand.GetDisplayName(), True)
+            EndIf
+            c += 1
+        EndWhile
+        JsonUtil.Save(StoreFile())
         Diag(LOG_WARN(), (tied + 1) + " mothers delivered in the same sweep - nothing " + \
             "distinguishes them, so this child is recorded with a CANDIDATE LIST " + \
             "instead of a mother. Resolve it from the in-game menu.")
@@ -1264,9 +1299,42 @@ Actor Function ClaimAwaitingMother()
     If found > 1
         Diag(LOG_INFO(), found + " mothers awaiting; claimed the earliest delivery.")
     EndIf
+    ; A mother was claimed, so nothing is pending. Clearing here stops a tie from
+    ; an earlier birth being applied to an unrelated child later.
+    ClearPendingCandidates()
     StorageUtil.SetIntValue(best, "SNKin_Awaiting", 0)
     WatchRemove(best)
     Return best
+EndFunction
+
+Function ClearPendingCandidates() Global
+    ; Pending exists only while a tie is live. Every exit from
+    ; ClaimAwaitingMother that is NOT a tie clears it, so RecordChild can trust
+    ; a non-empty list to be about the child it is recording right now, with no
+    ; timestamp and no staleness window to reason about.
+    JsonUtil.IntListClear(StoreFile(), "pending.candidates")
+    JsonUtil.StringListClear(StoreFile(), "pending.candidateNames")
+    JsonUtil.Save(StoreFile())
+EndFunction
+
+Form[] Function PendingCandidates() Global
+    ; The tied mothers ClaimAwaitingMother persisted, as Actors.
+    ;
+    ; A FormID that no longer resolves is skipped rather than dropped as a hole,
+    ; so the returned array is always dense and its length is a true count.
+    Form[] hits = new Form[8]
+    Int n = 0
+    Int total = JsonUtil.IntListCount(StoreFile(), "pending.candidates")
+    Int i = 0
+    While i < total && n < 8
+        Actor a = Game.GetFormEx(JsonUtil.IntListGet(StoreFile(), "pending.candidates", i)) as Actor
+        If a != None
+            hits[n] = a
+            n += 1
+        EndIf
+        i += 1
+    EndWhile
+    Return Utility.ResizeFormArray(hits, n)
 EndFunction
 
 ; ===========================================================================
