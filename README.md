@@ -1,11 +1,13 @@
 # SkyrimNet Kinship
 
-Makes parent–child relationships from **Fertility Mode Reloaded** permanent and
-visible to **SkyrimNet**, so a child's dialogue knows who its parents are and a
-mother never forgets the child she bore — however much time has passed.
+Makes parentage permanent and visible to **SkyrimNet**, so a child's dialogue
+knows who its parents are and a mother never forgets the child she bore —
+however much time has passed. Works with **Fertility Mode Reloaded**,
+**Fertility Mode v3**, and **Beeing Female NG**.
 
-Soft dependency on both. Without Fertility Mode the plugin loads inert and the
-decorator answers `known:0`; nothing errors and no prompt breaks.
+Soft dependency on the fertility mod and SkyrimNet. Without a fertility mod the
+plugin loads inert and the decorator answers `known:0`; nothing errors and no
+prompt breaks.
 
 ---
 
@@ -80,6 +82,32 @@ The prompt reflects the same principle: a child whose mother is unknown reads as
 
 ---
 
+## Life stages (optional, off by default)
+
+Children can age through **newborn → infant → toddler → child → adolescent →
+adult** on a configurable game-day clock instead of jumping straight from birth
+to grown. Off by default; turning on **Life Stages** in the SkyrimNet dashboard
+enables it, and the character bio then renders a child's stage as disposition —
+never as an age in years, since Skyrim has one child body for every age.
+
+Two independent add-ons sit on top, both off by default:
+
+- **Size Children To Their Stage** scales the actor so a toddler and an
+  adolescent are told apart on sight. It scales the *child* mesh, whose
+  proportions are already a child's, so it reads as younger rather than as a
+  shrunken adult.
+- **Take Fertility Mode's Baby Item** hands the whole childhood to this mod:
+  the birth is recorded at labour, the baby item is taken so Fertility Mode
+  never matures the child on its own timer, and the child gets a body at
+  toddler. **Permanent per birth** — read the setting's description before
+  enabling it. Fertility Mode only; Beeing Female runs its own childhood and
+  this mod stays out of it.
+
+The F1 panel corrects any child's stage, name, and parents by hand, and can
+give a body to a child that Fertility Mode named but never spawned.
+
+---
+
 ## Install
 
 Install the archive from
@@ -97,7 +125,7 @@ SKSE panel is included. There is no manual build step.
 | **SKSE64** | required |
 | **PapyrusUtil SE** | required — `StorageUtil`, `JsonUtil` and `MiscUtil` are the entire storage layer |
 | **SkyrimNet** | required in practice; this mod exists to feed it |
-| **Fertility Mode Reloaded** | soft — without it the plugin loads inert, the decorator answers `known:0`, and nothing errors |
+| **A fertility mod** | soft — **Fertility Mode Reloaded**, **Fertility Mode v3**, or **Beeing Female NG**. Without one the plugin loads inert, the decorator answers `known:0`, and nothing errors |
 | **SKSE Menu Framework** | optional — only for the F1 management panel. Without it the in-game picker still works |
 
 ### Building from source

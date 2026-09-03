@@ -153,7 +153,56 @@ String Function ChildPayload(Int aiIdx) Global
     If mother != ""
         motherKnown = 1
     EndIf
+    ; BORN TOGETHER. Beeing Female delivers a configurable number of children
+    ; from one pregnancy, so a child can have siblings who share not just their
+    ; parents but their birth - which is a different and more specific fact.
+    ;
+    ; READ FROM THE GROUP ID, NEVER FROM THE BIRTH STAMP. On the development
+    ; save two children carry the same stamp to four decimals and are not
+    ; siblings at all: two mothers delivered in the same instant. Matching on
+    ; time would have made them twins.
+    String sibs = ""
+    Int sibN = 0
+    Int grp = JsonUtil.GetIntValue(f, "child." + aiIdx + ".birthGroup", 0)
+    If grp != 0
+        Int rn = JsonUtil.StringListCount(f, "roster")
+        Int s = 0
+        While s < rn
+            If s != aiIdx && JsonUtil.GetIntValue(f, "child." + s + ".birthGroup", 0) == grp \
+                    && JsonUtil.GetIntValue(f, "child." + s + ".hidden", 0) != 1
+                String sn = JsonUtil.GetStringValue(f, "child." + s + ".name", "")
+                If sn != ""
+                    If sibN > 0
+                        sibs += ","
+                    EndIf
+                    sibs += "{\"name\":\"" + JsonEscape(sn) + "\"" + \
+                        ",\"gender\":\"" + JsonEscape(JsonUtil.GetStringValue(f, "child." + s + ".gender", "")) + "\"}"
+                    sibN += 1
+                EndIf
+            EndIf
+            s += 1
+        EndWhile
+    EndIf
+
+    ; LIFE STAGE, and ONLY when the feature is on.
+    ;
+    ; Omitted entirely rather than sent as a default when stages are disabled,
+    ; so the prompt's default() guards render nothing at all. A "stage" of
+    ; newborn on a mod that is not modelling age would be a confident lie about
+    ; every child in the game.
+    String stagePart = ""
+    If SNKin_Bridge.StagesEnabled()
+        Int st = JsonUtil.GetIntValue(f, "child." + aiIdx + ".stage", -1)
+        If st >= 0
+            stagePart = ",\"stage\":\"" + SNKin_Bridge.StageName(st) + "\"" + \
+                ",\"stageNum\":" + st
+        EndIf
+    EndIf
+
     Return "{\"known\":1,\"role\":\"child\"" + \
+        stagePart + \
+        ",\"twinCount\":" + sibN + \
+        ",\"twins\":[" + sibs + "]" + \
         ",\"name\":\"" + JsonEscape(nm) + "\"" + \
         ",\"father\":\"" + JsonEscape(JsonUtil.GetStringValue(f, "child." + aiIdx + ".father", "")) + "\"" + \
         ",\"mother\":\"" + JsonEscape(mother) + "\"" + \
@@ -204,7 +253,20 @@ String Function ParentPayload(Actor akActor) Global
             relation = "father"
             otherName = JsonUtil.GetStringValue(f, "child." + idx + ".mother", "")
         EndIf
+        ; The parent's side gets the stage too - a mother knows whether the
+        ; child she bore is a toddler or nearly grown, and for the two stages
+        ; that have no body at all this is the ONLY place they can be spoken
+        ; about.
+        String kidStage = ""
+        If SNKin_Bridge.StagesEnabled()
+            Int kst = JsonUtil.GetIntValue(f, "child." + idx + ".stage", -1)
+            If kst >= 0
+                kidStage = ",\"stage\":\"" + SNKin_Bridge.StageName(kst) + "\"" + \
+                    ",\"stageNum\":" + kst
+            EndIf
+        EndIf
         kids += "{\"name\":\"" + JsonEscape(JsonUtil.GetStringValue(f, "child." + idx + ".name", "")) + "\"" + \
+            kidStage + \
             ",\"relation\":\"" + relation + "\"" + \
             ",\"otherParent\":\"" + JsonEscape(otherName) + "\"" + \
             ",\"gender\":\"" + JsonEscape(JsonUtil.GetStringValue(f, "child." + idx + ".gender", "")) + "\"" + \

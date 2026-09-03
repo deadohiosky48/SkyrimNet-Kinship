@@ -69,8 +69,28 @@ try {
     # Scrubbing the STAGED copies leaves the build output alone.
     & (Join-Path $PSScriptRoot 'sanitize-pex.ps1') -Path (Join-Path $stage 'Scripts') -Recurse
 
-    # --- 3. prompt, manifest, settings -------------------------------------
+    # --- 3. prompt and manifest --------------------------------------------
     Copy-Item (Join-Path $repo 'SKSE') $stage -Recurse -Force
+
+    # SETTINGS.YAML IS DELIBERATELY NOT SHIPPED.
+    #
+    # It is LIVE STATE. Shipping it means every version installed through a mod
+    # manager replaces the player's configuration with defaults - silently, and
+    # with no way for this mod to prevent it, because replacing a mod's files is
+    # exactly what installing a mod means. That happened here: a Vortex update
+    # turned life stages, sizing and confiscation all back off mid-playthrough.
+    #
+    # SkyrimNet GENERATES the file from manifest.yaml when it is missing, and
+    # then never overwrites it. Verified against SeverActions, which ships only
+    # a manifest and has a live settings.yaml anyway - which is why its settings
+    # survive updates and ours did not.
+    #
+    # The repo copy stays: it carries the reasoning behind every default, and
+    # tools/deploy.ps1 uses it for local work while preserving live values.
+    $shipped = Join-Path $stage 'SKSE\Plugins\SkyrimNet\config\plugins\SkyrimNet Kinship\settings.yaml'
+    if (Test-Path $shipped) {
+        Remove-Item $shipped -Force
+    }
 
     # --- 3b. the optional SKSE panel, if it has been built -----------------
     # Shipped IN THE ARCHIVE rather than hand-copied into Vortex staging.

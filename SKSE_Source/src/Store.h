@@ -25,6 +25,8 @@ namespace Kinship::Store {
         std::int32_t fatherId = 0;
         float born = 0.0f;           // game days
         bool hidden = false;          // tombstoned: kept for index stability, not shown
+        int stage = -1;              // 0 newborn .. 5 adult; -1 = stages off or not yet computed
+        bool hasBody = false;        // a live actor reference is recorded for this child
 
         // Populated only when a birth could not be attributed. Both vectors are
         // index-aligned and may contain duplicate names - see the Papyrus side,

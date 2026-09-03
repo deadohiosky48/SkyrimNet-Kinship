@@ -38,7 +38,7 @@ Scriptname SNKin_Bridge extends Quest
 _JSW_BB_Storage _store
 Bool            _ready
 Float           _lastBootstrap
-Bool            _sweeping
+Float           _sweepingSince   ; real-time stamp, 0.0 = idle. See Sweep.
 
 Int Function LOG_ERROR() Global
     Return 1
@@ -267,6 +267,10 @@ Function RegisterEvents()
     ; parent, and a child asking after her is the whole point - but she stops
     ; being a delivery candidate.
     RegisterForModEvent("FMR_MotherDeath", "OnMotherDeath")
+    ; Beeing Female NG. Registered unconditionally - an event nobody sends
+    ; costs nothing, and gating on HasBfng here would miss a mid-playthrough
+    ; install, since registrations are rebuilt on every load anyway.
+    RegisterForModEvent("BeeingFemaleLabor", "OnBfLabor")
 EndFunction
 
 Function RegisterDecorators()
@@ -378,6 +382,27 @@ Event OnLabor(String asEventName, Form akSender, Int aiIndex)
     StorageUtil.SetFloatValue(mother, "SNKin_BornAt", Utility.GetCurrentGameTime())
     WatchAdd(mother)
     Diag(LOG_INFO(), "Labor: " + mother.GetDisplayName() + " delivered the player's child.")
+
+    ; RECORD IT NOW when we own this childhood. Waiting for Fertility Mode to
+    ; register the child would mean waiting for the day-ten maturation that
+    ; taking the baby item exists to prevent - the circularity that made
+    ; kinStageConfiscate inert. The watch list above still runs, because it
+    ; costs nothing and is what the un-owned path depends on.
+    If OwnsFmrBirth()
+        Int dadId = 0
+        Actor dad = Game.GetPlayer()
+        If fatherNow == dad.GetDisplayName()
+            dadId = dad.GetFormID()
+        Else
+            ; A FEMALE PLAYER'S CHILDREN HAVE AN NPC FATHER, and he needs the
+            ; same reverse index a mother gets or he cannot speak about his own
+            ; children. PersonIdByName returns 0 for ambiguity as well as
+            ; absence, so two NPCs sharing a display name leave the link
+            ; nameless rather than guessed - the rule the whole store follows.
+            dadId = PersonIdByName(fatherNow)
+        EndIf
+        ClaimFmrBirth(mother, fatherNow, dadId)
+    EndIf
 EndEvent
 
 String Function FatherNameAt(Int aiIndex)
@@ -509,11 +534,29 @@ EndFunction
 ; The poll
 ; ===========================================================================
 
-Event OnUpdate()
+Event OnUpdateGameTime()
     { Game-time poll, matched to FMR's own cadence. FMR drives its whole
       simulation from RegisterForSingleUpdateGameTime(PollingInterval), so
       polling faster than it updates cannot find anything sooner and only
-      spends Papyrus budget. }
+      spends Papyrus budget.
+
+      ONUPDATEGAMETIME, NOT ONUPDATE. These are different events and the
+      registration picks which one fires:
+
+          RegisterForSingleUpdate(seconds)       -> OnUpdate()
+          RegisterForSingleUpdateGameTime(hours) -> OnUpdateGameTime()
+
+      This script registered the GAME TIME one and implemented the REAL TIME
+      one, so the poll never fired even once. Papyrus reports nothing for this:
+      no error, no warning, just an event that is never raised.
+
+      It went unnoticed for the mod's whole life because Bootstrap also sweeps,
+      and Bootstrap runs on every game load - so during development, where a
+      save is loaded every few minutes, the sweep appeared to work. It only
+      showed up in a long uninterrupted session: Fertility Mode kept polling on
+      its own timer while this mod went silent for forty-three real minutes,
+      and every sweep in the entire log turned out to be preceded by a
+      "Bridge ready" line. }
     If _ready && IsEnabled()
         Sweep()
     EndIf
@@ -549,13 +592,38 @@ Function Sweep()
     ;     could hand the same mother to two children, or clear her flag between
     ;     one sweep's count and its claim.
     ;
-    ; Papyrus has no lock primitive; a plain flag is the standard idiom and is
-    ; sufficient here because every caller is on the same script instance and
-    ; the guarded region contains no waits.
-    If _sweeping
+    ; A MEMBER FLAG IS NOT ENOUGH, and a live save proved it.
+    ;
+    ; The claim used to be that "every caller is on the same script instance".
+    ; It is false, and MigrateStore's own comment already said so - eight
+    ; concurrent sweeps were observed on the first live run. The evidence turned
+    ; up again in the log of a real birth: every line doubled, "Remembered 70
+    ; new person/people" twice, and a tie's shortlist copied onto the child
+    ; TWICE, giving six candidate entries where three were found.
+    ;
+    ; _sweeping guards one instance against itself and nothing against the
+    ; others. So this takes the same process-wide lock MigrateStore does, with
+    ; the same staleness escape - Papyrus has no try/finally, and a holder that
+    ; died mid-sweep would otherwise stop every later sweep forever.
+    ; A BARE BOOLEAN HERE WAS A PERMANENT FAILURE WAITING TO HAPPEN. Papyrus
+    ; has no try/finally, so any error between setting it and clearing it would
+    ; block this instance's sweep FOREVER - and with the poll now actually
+    ; firing, that would take the whole mod down silently rather than costing
+    ; one pass. Stamped instead, with the same staleness escape the schema lock
+    ; and the process-wide lock below already use.
+    Float lockNow = Utility.GetCurrentRealTime()
+    If _sweepingSince > 0.0 && _sweepingSince <= lockNow && \
+            (lockNow - _sweepingSince) < 30.0
         Return
     EndIf
-    _sweeping = True
+    Float lockHeld = StorageUtil.GetFloatValue(None, "SNKin_SweepLock", 0.0)
+    ; held > now means the value came from a previous session: real time counts
+    ; from launch and resets, the same trap the Bootstrap debounce documents.
+    If lockHeld > 0.0 && lockHeld <= lockNow && (lockNow - lockHeld) < 30.0
+        Return
+    EndIf
+    StorageUtil.SetFloatValue(None, "SNKin_SweepLock", lockNow)
+    _sweepingSince = lockNow
 
     MigrateStore()
     ; AFTER the schema migration, which may already have swept, and before
@@ -570,12 +638,23 @@ Function Sweep()
     RepairParentIds()
     NoteDeliveries()
     NoteNewChildren()
+    ; Beeing Female's children arrive as spawned actors rather than through a
+    ; registration array, so they are picked up by walking its own live list.
+    ; Returns immediately when Beeing Female is absent.
+    NoteBfChildren()
+    DetectBfGrowUp()
+    ; Babies already on the way when the feature was switched on. Runs before
+    ; the naming prompt so an adopted birth can be named in the same sweep.
+    AdoptInFlightBirths()
+    ; Asks for one deferred name, and only when the player is able to answer.
+    PromptPendingNames()
     BindSpawnedChildren()
     ; LAST, and it has to be. It publishes what the passes above just decided,
     ; so anything running earlier would export the previous sweep's answer.
     RefreshKinshipExports()
 
-    _sweeping = False
+    _sweepingSince = 0.0
+    StorageUtil.SetFloatValue(None, "SNKin_SweepLock", 0.0)
 EndFunction
 
 Function RememberPeople()
@@ -944,7 +1023,34 @@ Function NoteDeliveries()
                 If prev > 0.0 && cur == 0.0
                     ; Her baby just matured into a child record.
                     StorageUtil.SetIntValue(mother, "SNKin_Awaiting", 1)
-                    StorageUtil.SetFloatValue(mother, "SNKin_AwaitingAt", Utility.GetCurrentGameTime())
+                    ; STAMPED WITH WHEN SHE GAVE BIRTH, NOT WHEN WE NOTICED.
+                    ;
+                    ; `prev` is her own BabyAdded - the moment Fertility Mode
+                    ; handed her the baby item. GetCurrentGameTime() was the
+                    ; moment this sweep ran, which is the same value for every
+                    ; mother noticed in the same pass, and that is what produced
+                    ; false ties on a live save: Fenja and Hermir delivered an
+                    ; hour apart (181.5910 against 181.6342) and were recorded
+                    ; as indistinguishable, because the evidence that separated
+                    ; them was overwritten with "now".
+                    ;
+                    ; The sweep runs hourly, so anything finer than an hour was
+                    ; being thrown away every single time. This keeps it.
+                    StorageUtil.SetFloatValue(mother, "SNKin_AwaitingAt", prev)
+                    ; TWO CLOCKS, BECAUSE THEY ANSWER TWO QUESTIONS.
+                    ;
+                    ; AwaitingAt is WHEN SHE GAVE BIRTH and orders the claim -
+                    ; the earliest delivery is matched first. AwaitingSince is
+                    ; WHEN WE NOTICED and drives expiry, which asks how long a
+                    ; flag has gone unresolved.
+                    ;
+                    ; Conflating them retires a mother the moment she becomes
+                    ; relevant. Ingun Black-Briar's baby took twenty-two days to
+                    ; mature, so the instant her flag was raised it was already
+                    ; older than the staleness window and was retired 0.9 days
+                    ; later - discarding a delivery that had only just happened.
+                    StorageUtil.SetFloatValue(mother, "SNKin_AwaitingSince", \
+                        Utility.GetCurrentGameTime())
                     Diag(LOG_INFO(), "Delivery matured: " + mother.GetDisplayName() + " awaiting a child record.")
                 EndIf
             EndIf
@@ -988,6 +1094,10 @@ Function NoteNewChildren()
             If fathers != None && i < fathers.Length
                 fmrFather = fathers[i]
             EndIf
+            ; The duplicate guard lives in RecordChild, where the mother has
+            ; actually been resolved. Testing it here would only know that SOME
+            ; claimed birth was pending, not whether it was THIS one - and would
+            ; drop a legitimate child whenever an unrelated claim was in flight.
             RecordChild(nm, gender, raceName, fmrFather)
         EndIf
         i += 1
@@ -1122,6 +1232,34 @@ Function RecordChild(String asName, String asGender, String asRace, String asFmr
         fatherId = 0
     EndIf
 
+    ; ONE CHILD, ONE RECORD. Reachable only when confiscation missed: if the
+    ; item had been taken, Fertility Mode could never have got as far as naming
+    ; this child. So the mother was untracked at the moment we tried, or a
+    ; Fertility Mode update moved the gate.
+    ;
+    ; Checked HERE rather than in NoteNewChildren because this is the first
+    ; point at which the mother is actually known. Asking earlier could only
+    ; establish that SOME claim was pending, and would drop a legitimate child
+    ; whenever an unrelated birth happened to be in flight.
+    ;
+    ; TAKE THE NAME RATHER THAN DISCARDING IT. Fertility Mode reaching this
+    ; point means it prompted the player, so this name is very likely the one
+    ; they chose - better than the placeholder the claim is carrying.
+    Int claimed = OwnedBirthFor(motherId)
+    If claimed >= 0
+        If JsonUtil.GetIntValue(StoreFile(), "child." + claimed + ".needsName", 0) == 1
+            RenameChildRecord(claimed, asName)
+            Diag(LOG_WARN(), "Fertility Mode named '" + asName + "' before the baby item " + \
+                "could be taken. Keeping the claimed record and adopting that name " + \
+                "rather than recording the child twice.")
+        Else
+            Diag(LOG_WARN(), "Fertility Mode registered '" + asName + "' for a birth this " + \
+                "mod already claimed as '" + JsonUtil.GetStringValue(StoreFile(), \
+                "child." + claimed + ".name", "?") + "'. Not recording it twice.")
+        EndIf
+        Return
+    EndIf
+
     ; Append to the roster FIRST - the index it lands at is the record key.
     JsonUtil.StringListAdd(StoreFile(), "roster", asName, False)
     Int idx = JsonUtil.StringListFind(StoreFile(), "roster", asName)
@@ -1138,6 +1276,13 @@ Function RecordChild(String asName, String asGender, String asRace, String asFmr
     JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".gender", asGender)
     JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".race", asRace)
     JsonUtil.SetFloatValue(StoreFile(), "child." + idx + ".born", Utility.GetCurrentGameTime())
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".source", SRC_FMR())
+    ; A GROUP OF ONE, not a blank. Fertility Mode delivers a single child per
+    ; pregnancy, so every one of its children is an only child of that birth -
+    ; which is a fact, not an absence. Giving it a real group id means "who
+    ; shared your birth" is answered the same way for both sources instead of
+    ; needing to know which mod recorded you.
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".birthGroup", NextBirthGroup())
 
     ; BOTH parents get a reverse index, by the same rule and with no special
     ; case for either. A female player's children have an NPC father, and he
@@ -1243,6 +1388,33 @@ Form[] Function MothersMaturedRecently(Float afTolerance)
     Return Utility.ResizeFormArray(hits, n)
 EndFunction
 
+Bool Function HasChildBornSince(Int aiParentFormID, Float afSince) Global
+    { True when this parent already has a recorded child born at or after the
+      given moment.
+
+      Reads the reverse index rather than scanning the roster, so it costs one
+      walk over this parent's own children - typically one or two entries.
+      Hidden records do not count: a tombstoned child is one the player said
+      does not belong to this playthrough, and it cannot be the answer to a
+      delivery that is still outstanding. }
+    If aiParentFormID == 0
+        Return False
+    EndIf
+    String path = ParentPath(aiParentFormID)
+    Int n = JsonUtil.IntListCount(StoreFile(), path)
+    Int i = 0
+    While i < n
+        Int idx = JsonUtil.IntListGet(StoreFile(), path, i)
+        If JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".hidden", 0) != 1
+            If JsonUtil.GetFloatValue(StoreFile(), "child." + idx + ".born", 0.0) >= afSince
+                Return True
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    Return False
+EndFunction
+
 Actor Function ClaimAwaitingMother()
     { Returns the mother who bore the child now being recorded, or None.
 
@@ -1275,9 +1447,86 @@ Actor Function ClaimAwaitingMother()
     ; population, and a picker with nine identical-looking rows helps nobody.
     Form[] awaiting = new Form[8]
     Int nAwaiting = 0
+
+    ; A FLAG THAT WAS NEVER RESOLVED MUST NOT OUTRANK A BIRTH HAPPENING NOW.
+    ;
+    ; This is the bug that put the WRONG mothers on a real child. SNKin_Awaiting
+    ; is cleared on the success path and left alone everywhere else, so a mother
+    ; whose child was assigned by hand - or never recorded at all - stays flagged
+    ; forever. And since `best` is the EARLIEST awaiting, a stale flag always
+    ; wins.
+    ;
+    ; On the live save Danica Pure-Spring and Nilsine Shatter-Shield had been
+    ; sitting flagged from an earlier birth. When Fenja and Hermir delivered,
+    ; the tie was computed among the two stale ones, and the shortlist recorded
+    ; on both children named neither mother who had actually just given birth.
+    ; The picker could not have produced the right answer from it.
+    ;
+    ; Expiry is generous on purpose - a flag is only wrong once it is older than
+    ; any birth it could still belong to. AwaitingAt is now the mother's own
+    ; BabyAdded, so the age of the flag is the age of the BIRTH, and a birth
+    ; older than a full baby duration plus slack has either been recorded
+    ; already or is never going to be.
+    Float staleAfter = BabyDurationDays()
+    If staleAfter <= 0.0
+        staleAfter = 14.0
+    EndIf
+    staleAfter += 5.0
+    Float rightNow = Utility.GetCurrentGameTime()
+
     Int i = 0
     While i < n
         Actor a = StorageUtil.FormListGet(None, "SNKin_Watch", i) as Actor
+        If a != None && StorageUtil.GetIntValue(a, "SNKin_Awaiting", 0) == 1
+            Float at = StorageUtil.GetFloatValue(a, "SNKin_AwaitingAt", 0.0)
+
+            ; ALREADY ANSWERED. Self-healing, and it is what retires flags left
+            ; behind before any of this existed - including one assigned by hand
+            ; before SetParent learned to clear it.
+            ;
+            ; If she already has a child recorded whose birth is at or after
+            ; this delivery, that delivery HAS produced a record and the flag is
+            ; a leftover. A mother who delivers again gets a fresh, later
+            ; AwaitingAt, so a new pregnancy cannot be cancelled by an old child.
+            If at > 0.0 && HasChildBornSince(a.GetFormID(), at - 0.05)
+                StorageUtil.SetIntValue(a, "SNKin_Awaiting", 0)
+                Diag(LOG_INFO(), "Cleared " + a.GetDisplayName() + \
+                    "'s pending delivery - a child of hers is already recorded for it.")
+                a = None
+            EndIf
+
+            ; TOO OLD TO STILL BE WAITING, measured from when we NOTICED rather
+            ; than from the birth. See the two-clock note where these are
+            ; stamped: a baby that took longer than the window to mature would
+            ; otherwise be retired the moment it finally arrived, which is what
+            ; happened to Ingun Black-Briar.
+            ;
+            ; A flag raised by an older build has no AwaitingSince. Treating
+            ; that as infinitely old would retire every pending mother on the
+            ; first sweep after upgrading, so it falls back to the birth stamp -
+            ; the previous behaviour, which is right for exactly those flags.
+            If a != None
+                Float since = StorageUtil.GetFloatValue(a, "SNKin_AwaitingSince", 0.0)
+                If since <= 0.0
+                    since = at
+                EndIf
+                If since > 0.0 && (rightNow - since) > staleAfter
+                    ; Retire it rather than skipping it, or every later sweep
+                    ; pays the same lookup to reach the same conclusion.
+                    StorageUtil.SetIntValue(a, "SNKin_Awaiting", 0)
+                    ; INFO, NOT DEBUG. This fires at most once per stale flag
+                    ; ever, and it is the visible trace of the defect that put
+                    ; two wrong mothers on a real child. At debug it would be
+                    ; invisible at the default log level - which is to say,
+                    ; invisible exactly when someone is working out why a tie
+                    ; resolved oddly.
+                    Diag(LOG_INFO(), "Retired a stale delivery flag on " + \
+                        a.GetDisplayName() + " - it was " + (rightNow - since) + \
+                        " days old and no child was ever recorded against it.")
+                    a = None
+                EndIf
+            EndIf
+        EndIf
         If a != None && StorageUtil.GetIntValue(a, "SNKin_Awaiting", 0) == 1
             Float at = StorageUtil.GetFloatValue(a, "SNKin_AwaitingAt", 0.0)
             found += 1
@@ -1830,6 +2079,25 @@ Bool Function SetParentStatic(String asChildName, Actor akParent, Int aiIsFather
     RefreshParentCount(oldId)
     RefreshParentCount(newId)
 
+    ; NAMING HER AS THE MOTHER IS THE ANSWER TO "WHO DELIVERED THIS CHILD".
+    ;
+    ; SNKin_Awaiting was only ever cleared on the automatic success path, so a
+    ; mother whose child was assigned BY HAND stayed flagged forever - and since
+    ; the earliest awaiting wins, she then captured somebody else's baby.
+    ;
+    ; Measured, not theorised. Fenja Secret-Fire and Hermir Strong-Heart were
+    ; assigned to Decimus and Aulus by hand on day 192; five days later a child
+    ; called Tova was born to a different mother entirely and was offered those
+    ; same two as its candidates, because their flags had never been retired.
+    ;
+    ; Only the mother, because only a delivery is what the flag records. A
+    ; father is not awaiting anything.
+    If aiIsFather == 0 && StorageUtil.GetIntValue(akParent, "SNKin_Awaiting", 0) == 1
+        StorageUtil.SetIntValue(akParent, "SNKin_Awaiting", 0)
+        Diag(LOG_INFO(), "Cleared " + akParent.GetDisplayName() + \
+            "'s pending delivery - it is now answered by " + asChildName + ".")
+    EndIf
+
     Diag(LOG_INFO(), "SetParent: " + asChildName + " -> " + role + " " + \
         akParent.GetDisplayName() + ".")
     Return True
@@ -2293,6 +2561,38 @@ Bool Function MarkChildActor(Actor akChild, Int aiIdx) Global
         JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".refId", refId)
         JsonUtil.Save(StoreFile())
     EndIf
+    ; THE EARLIEST MOMENT A UUID CAN BE READ, and for many children the only
+    ; one. Growing up destroys this reference - Beeing Female deletes it
+    ; outright - so a UUID not captured while the child is alive is a UUID that
+    ; can never be captured. Writes once and then costs a single string read.
+    CaptureUuid(aiIdx, akChild)
+
+    ; A HANDLE THAT OUTLIVES THE ACTOR, published for other mods.
+    ;
+    ; ASKED FOR BY Relationships, and it inverts a problem this mod got wrong
+    ; first. The obvious offer was a pointer to the previous reference - and it
+    ; is useless, because that reference has been DELETED by the time anyone
+    ; could follow it. Beeing Female calls child.Delete() in the same function
+    ; that spawns the adult, and StorageUtil reads are keyed by form: the
+    ; pointer would be the address of a demolished house.
+    ;
+    ; So publish the record instead. A consumer keys its own state to this
+    ; rather than to the actor, and then nothing needs migrating at the
+    ; transition, because nothing was ever attached to the thing that gets
+    ; destroyed. No timing window, no migration code, and it survives all five
+    ; stage changes rather than needing a pointer chain walked back.
+    ;
+    ; +1 SO THAT ZERO MEANS ABSENT. The roster index is 0-based and index 0 is
+    ; a perfectly ordinary child - on the development save it is Nicollette -
+    ; so publishing it raw would make exactly one child indistinguishable from
+    ; "no record". That is the worst kind of bug: correct for everyone except
+    ; one person, forever.
+    ;
+    ; TREAT IT AS OPAQUE. It is a stable identifier, not an index into anything
+    ; of ours, and it is only stable because this roster is append-only:
+    ; ForgetChild tombstones and never removes, precisely because the index is
+    ; already load-bearing as a record key internally.
+    StorageUtil.SetIntValue(akChild, "SNKin_ChildRecordId", aiIdx + 1)
     Return True
 EndFunction
 
@@ -2519,6 +2819,1446 @@ Int Function PlasticityFor(Int aiStage) Global
     Return 10
 EndFunction
 
+; ===========================================================================
+; FERTILITY SOURCES
+;
+; A fertility mod is a BIRTH DETECTOR and, sometimes, a childhood. Everything
+; downstream of the record - the roster, the decorators, the prompt, the
+; picker, the panel, drift repair - is already source-agnostic and stays that
+; way. Only ingestion differs.
+;
+; THE TWO SUPPORTED SOURCES WANT OPPOSITE TREATMENT, and that is the whole
+; design rather than an inconsistency:
+;
+;   Fertility Mode Reloaded has a THIN childhood - a carried item, a ten-day
+;   timer, a class-training path to adulthood. We supersede it, because the
+;   life-stage model is strictly richer and the two cannot both be true.
+;
+;   Beeing Female NG has a RICH one - continuous scale growth, grow-to-adult
+;   with inherited stats, an add-on framework for child bases across races. We
+;   CONSUME it. Re-implementing growth on top of a system that already does it
+;   well would be duplicated effort fighting a better implementation, and its
+;   grow-to-adult already solves the problem we have no answer for.
+;
+; So `SourceOwnsGrowth` is the switch the whole life-stage layer hangs off.
+; Where it answers True, our stages read theirs; where False, we provide them.
+;
+; NO TYPED SCRIPT DEPENDENCY ON BEEING FEMALE, deliberately. FMR needs
+; _JSW_BB_Storage, which has to be vendored to compile against and cannot be
+; redistributed. BF NG exposes everything through documented StorageUtil keys
+; and mod events (docs/authors/state-data.md), so this reads it with nothing
+; vendored at all. Any future source added the same way costs a config table
+; rather than a compile-time dependency.
+; ===========================================================================
+
+Int Function SRC_NONE() Global
+    Return 0
+EndFunction
+
+Int Function SRC_FMR() Global
+    Return 1
+EndFunction
+
+Int Function SRC_BFNG() Global
+    Return 2
+EndFunction
+
+String Function SourceName(Int aiSource) Global
+    If aiSource == SRC_FMR()
+        Return "Fertility Mode"
+    ElseIf aiSource == SRC_BFNG()
+        Return "Beeing Female"
+    EndIf
+    Return "unknown"
+EndFunction
+
+Bool Function HasFmr() Global
+    ; Fertility Mode v3 masters Fertility Mode.esm and resolves every FormID
+    ; this mod hardcodes identically, so it satisfies this the same way FMR
+    ; does and needs no separate case.
+    Return Game.GetModByName("Fertility Mode.esm") != 255
+EndFunction
+
+Bool Function HasBfng() Global
+    ; Checked as both a regular and a light plugin. BeeingFemale.esm ships as a
+    ; full master today, but a future ESL-flagged build would answer 255 to
+    ; GetModByName and silently disable the whole path.
+    If Game.GetModByName("BeeingFemale.esm") != 255
+        Return True
+    EndIf
+    Return Game.GetLightModByName("BeeingFemale.esm") != 255
+EndFunction
+
+Bool Function SourceOwnsGrowth(Int aiSource) Global
+    { True when the fertility mod runs its own childhood and ours must stand
+      down. See the section header - this is the switch, not a detail. }
+    Return aiSource == SRC_BFNG()
+EndFunction
+
+Int Function NextBirthGroup() Global
+    { An id shared by every child of ONE pregnancy.
+
+      NOT DERIVED FROM THE BIRTH TIME, and this save is why. Titus and Leif
+      carry the same stamp to four decimals - 167.4088 - and are not siblings
+      at all: Camilla Valerius and Ganna Uriel delivered in the same instant,
+      each to a different child, which is the same simultaneous maturation the
+      tie detector exists for. Grouping by timestamp would have declared them
+      twins AND given each the other's mother.
+
+      So the group comes from the labour event - one event, one pregnancy, one
+      mother - and never from coincidence. A counter is enough. }
+    Int n = JsonUtil.GetIntValue(StoreFile(), "nextBirthGroup", 1)
+    JsonUtil.SetIntValue(StoreFile(), "nextBirthGroup", n + 1)
+    JsonUtil.Save(StoreFile())
+    Return n
+EndFunction
+
+Function CaptureUuid(Int aiIdx, Actor akWho) Global
+    { Records this child's SkyrimNet UUID while the actor is alive.
+
+      THE WHOLE POINT IS TO DO THIS EARLY. When a child grows up the earlier
+      reference is DESTROYED - Beeing Female's GrowChildToAdult calls
+      child.Delete() in the same function that spawns the adult, and no mod
+      event marks the moment. A UUID captured only at transition time would
+      therefore never be captured at all.
+
+      The uuid_mappings row outlives the reference, so a succession declared
+      afterwards is still well-defined - but only if we kept the UUID. }
+    If akWho == None || aiIdx < 0
+        Return
+    EndIf
+    If JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".uuid", "") != ""
+        Return
+    EndIf
+    String u = SkyrimNetApi.GetEntityUUID(akWho)
+    If u == ""
+        Return
+    EndIf
+    JsonUtil.SetStringValue(StoreFile(), "child." + aiIdx + ".uuid", u)
+    JsonUtil.Save(StoreFile())
+EndFunction
+
+Function RecordSuccession(Int aiIdx, Actor akGrown) Global
+    { Notes that this child now lives in a different reference, and hands the
+      pair to whatever can carry the persona across.
+
+      THE LEDGER IS KEPT WHETHER OR NOT ANYTHING CAN USE IT YET. SkyrimNet has
+      the machinery - identity_aliases, co-identity memory search, diary
+      merging across co-identities - but its declared successions only accept
+      refs with a stable plugin+local form id, and every actor either fertility
+      mod spawns is a 0xFF runtime reference. A request is open upstream.
+
+      Keeping the ledger now is what makes that request retroactive: if the
+      API lands after children have already grown up, this walks its own
+      history and declares every past succession then. Nothing is lost by
+      waiting, which is the only reason waiting is safe. }
+    If aiIdx < 0 || akGrown == None
+        Return
+    EndIf
+    String was = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".uuid", "")
+    Int wasRef = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0)
+    If wasRef != 0
+        JsonUtil.IntListAdd(StoreFile(), "child." + aiIdx + ".priorRefs", wasRef, True)
+    EndIf
+    If was != ""
+        JsonUtil.StringListAdd(StoreFile(), "child." + aiIdx + ".priorUuids", was, True)
+    EndIf
+    ; The new reference becomes the current one, and its UUID is captured fresh.
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".refId", akGrown.GetFormID())
+    JsonUtil.SetStringValue(StoreFile(), "child." + aiIdx + ".uuid", "")
+    JsonUtil.Save(StoreFile())
+    CaptureUuid(aiIdx, akGrown)
+    BindChildRef(akGrown, aiIdx)
+    MarkChildActor(akGrown, aiIdx)
+
+    String now = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".uuid", "")
+    CarryIdentity(aiIdx, was, now)
+
+    ; ANNOUNCED, so a consumer can greet a grown child correctly rather than
+    ; noticing on its own next pass.
+    ;
+    ; HONEST ABOUT WHEN IT FIRES: at the moment KINSHIP notices, not at the
+    ; moment the transition happened. Where this mod runs the childhood those
+    ; are the same instant; where Beeing Female does, nothing announces the
+    ; change and we find it on a later sweep. Late, never wrong - and a
+    ; consumer keyed to the record id has lost nothing by the delay.
+    Int h = ModEvent.Create("SNKin_ChildGrewUp")
+    If h
+        ModEvent.PushForm(h, akGrown)
+        ModEvent.PushInt(h, aiIdx + 1)
+        ModEvent.Send(h)
+    EndIf
+EndFunction
+
+Event OnBfLabor(Form akMother, Int aiChildCount, Form akFather0, Form akFather1, Form akFather2)
+    { Beeing Female delivering. Signature per docs/authors/modevents.md:
+      Mother, ChildCount, Father0..2.
+
+      THE EVENT IS A GROUPING SIGNAL, NOT THE RECORD. Beeing Female emits this
+      BEFORE it spawns the child actors, and it stamps each spawned child with
+      its own FW.Child.Mother / FW.Child.Father / FW.Child.Name - so the actor
+      is the authority on its own parentage and we do not have to thread it
+      through from here. What only this moment can tell us is which children
+      belong to ONE pregnancy.
+
+      Father0..2 IS A TRUNCATED PREVIEW. The authoritative list is
+      FW.ChildFather on the mother, one entry per child matching FW.NumChilds -
+      Beeing Female models different fathers within a single birth. We do not
+      need it here for the reason above, but nothing downstream should ever
+      treat three as the maximum. }
+    If !IsEnabled()
+        Return
+    EndIf
+    Actor mum = akMother as Actor
+    If mum == None
+        Return
+    EndIf
+    Int n = aiChildCount
+    If n < 1
+        n = 1
+    EndIf
+    Int grp = NextBirthGroup()
+    JsonUtil.SetIntValue(StoreFile(), "bfPending." + mum.GetFormID() + ".group", grp)
+    JsonUtil.SetIntValue(StoreFile(), "bfPending." + mum.GetFormID() + ".count", n)
+    JsonUtil.SetFloatValue(StoreFile(), "bfPending." + mum.GetFormID() + ".at", \
+        Utility.GetCurrentGameTime())
+    JsonUtil.Save(StoreFile())
+    Diag(LOG_INFO(), "Beeing Female: " + mum.GetDisplayName() + " delivering " + n + \
+        " child(ren), birth group " + grp + ".")
+EndEvent
+
+Function NoteBfChildren() Global
+    { Picks up Beeing Female's spawned children and records the player's.
+
+      Walks FW.Babys, the global FormList of live child actors that Beeing
+      Female documents for exactly this purpose. Cheap enough for the sweep:
+      the list holds live children only, and every entry is skipped in one
+      lookup once it has been recorded. }
+    If !HasBfng()
+        Return
+    EndIf
+    Int n = StorageUtil.FormListCount(None, "FW.Babys")
+    If n <= 0
+        Return
+    EndIf
+    Actor player = Game.GetPlayer()
+    Int i = 0
+    While i < n
+        Actor kid = StorageUtil.FormListGet(None, "FW.Babys", i) as Actor
+        If kid != None && JsonUtil.GetIntValue(StoreFile(), \
+                "ref." + kid.GetFormID() + ".child", -1) < 0
+            Actor mum = StorageUtil.GetFormValue(kid, "FW.Child.Mother", None) as Actor
+            Actor dad = StorageUtil.GetFormValue(kid, "FW.Child.Father", None) as Actor
+            ; MOD SCOPE. Beeing Female tracks every woman in Skyrim; this mod is
+            ; about the player's family. A child of two NPCs is somebody else's
+            ; business and recording it would bloat the roster with people the
+            ; player will never be told about.
+            If mum == player || dad == player
+                RecordBfChild(kid, mum, dad)
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+EndFunction
+
+Function RecordBfChild(Actor akKid, Actor akMother, Actor akFather) Global
+    { One Beeing Female child, with both parents already known.
+
+      A SEPARATE PATH FROM RecordChild ON PURPOSE. That one exists to RECOVER a
+      mother Fertility Mode never stored - the awaiting watch list, the tie
+      shortlists, the candidate ladder. None of that applies here, because
+      Beeing Female hands us both parents outright. Routing this through the
+      recovery machinery would mean running an elaborate guess over an answer
+      we already have, and risking it overriding the truth. }
+    If akKid == None
+        Return
+    EndIf
+    String nm = akKid.GetDisplayName()
+    If nm == ""
+        Return
+    EndIf
+
+    Int grp = 0
+    If akMother != None
+        Float at = JsonUtil.GetFloatValue(StoreFile(), \
+            "bfPending." + akMother.GetFormID() + ".at", 0.0)
+        ; A WINDOW, because the labour event fires before the spawn and the
+        ; sweep arrives later still. Two game days is far wider than that gap
+        ; and far narrower than any plausible next pregnancy - Beeing Female
+        ; will not deliver the same mother twice inside it.
+        If at > 0.0 && (Utility.GetCurrentGameTime() - at) < 2.0
+            grp = JsonUtil.GetIntValue(StoreFile(), \
+                "bfPending." + akMother.GetFormID() + ".group", 0)
+        EndIf
+    EndIf
+
+    JsonUtil.StringListAdd(StoreFile(), "roster", nm, False)
+    Int idx = JsonUtil.StringListFind(StoreFile(), "roster", nm)
+    If idx < 0
+        Diag(LOG_ERROR(), "RecordBfChild: '" + nm + "' would not stay on the roster.")
+        Return
+    EndIf
+
+    String mumName = ""
+    Int mumId = 0
+    If akMother != None
+        mumName = akMother.GetDisplayName()
+        mumId = akMother.GetFormID()
+        RememberPerson(akMother)
+    EndIf
+    String dadName = ""
+    Int dadId = 0
+    If akFather != None
+        dadName = akFather.GetDisplayName()
+        dadId = akFather.GetFormID()
+        RememberPerson(akFather)
+    EndIf
+    ; Same rule as the Fertility Mode path: a parent can never be both.
+    If dadId != 0 && dadId == mumId
+        dadName = ""
+        dadId = 0
+    EndIf
+
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".name", nm)
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".mother", mumName)
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".father", dadName)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".motherId", mumId)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".fatherId", dadId)
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".gender", GenderWord(akKid))
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".source", SRC_BFNG())
+    ; THE BARE GIVEN NAME, kept alongside the display name. Beeing Female sets
+    ; the display name to childName + a family name, and carries only the bare
+    ; childName in FW.Child.Name onto the grown adult - so this is the half that
+    ; survives growing up and the half DetectBfGrowUp matches on.
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".bfName", \
+        StorageUtil.GetStringValue(akKid, "FW.Child.Name", ""))
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".birthGroup", grp)
+    ; BEEING FEMALE'S OWN DATE OF BIRTH, not ours. It records FW.Child.DOB at
+    ; the actual birth; our own stamp would be whenever the sweep first noticed,
+    ; which is the very error that makes seeded children compute as newborns.
+    Float dob = StorageUtil.GetFloatValue(akKid, "FW.Child.DOB", 0.0)
+    If dob <= 0.0
+        dob = Utility.GetCurrentGameTime()
+    EndIf
+    JsonUtil.SetFloatValue(StoreFile(), "child." + idx + ".born", dob)
+    If mumId != 0
+        JsonUtil.IntListAdd(StoreFile(), ParentPath(mumId), idx, False)
+    EndIf
+    If dadId != 0
+        JsonUtil.IntListAdd(StoreFile(), ParentPath(dadId), idx, False)
+    EndIf
+    JsonUtil.Save(StoreFile())
+
+    BindChildRef(akKid, idx)
+    MarkChildActor(akKid, idx)
+    CaptureUuid(idx, akKid)
+    RefreshParentCount(mumId)
+    RefreshParentCount(dadId)
+    RefreshChildTotal()
+
+    Diag(LOG_INFO(), "Beeing Female child recorded: " + nm + " - mother " + \
+        mumName + ", father " + dadName + ", birth group " + grp + ".")
+EndFunction
+
+Function DetectBfGrowUp() Global
+    { Notices a Beeing Female child who has become an adult.
+
+      NOTHING ANNOUNCES THIS. FWSystem.GrowChildToAdult spawns the adult,
+      copies the identity keys onto it, then calls child.Delete() in the same
+      function - and emits no mod event. So the only way to see it is to find
+      the adult afterwards, carrying the child's identity.
+
+      Which is precisely why CaptureUuid runs at record time rather than here:
+      by the time this notices, the child reference no longer exists and its
+      SkyrimNet UUID could never be read again.
+
+      MATCHED ON THE BARE NAME PLUS THE MOTHER. Beeing Female's display name is
+      childName + a family name, so siblings and cousins can share it; the
+      mother disambiguates. Deliberately NOT matched on display name alone -
+      the same rule that stops the roster repair merging two people who happen
+      to be called Kayla. }
+    If !HasBfng()
+        Return
+    EndIf
+
+    ; CHEAP FIRST PASS. Almost always finds nothing, and when it does the
+    ; expensive scan below is the only way to resolve it. One GetFormEx per
+    ; Beeing Female child beats walking FW.Babys on every sweep forever.
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Bool anyLost = False
+    Int i = 0
+    While i < n && !anyLost
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".source", 0) == SRC_BFNG()
+            Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".refId", 0)
+            If rid != 0 && Game.GetFormEx(rid) == None
+                anyLost = True
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    If !anyLost
+        Return
+    EndIf
+
+    Int babies = StorageUtil.FormListCount(None, "FW.Babys")
+    i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".source", 0) == SRC_BFNG()
+            Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".refId", 0)
+            If rid != 0 && Game.GetFormEx(rid) == None
+                String want = JsonUtil.GetStringValue(StoreFile(), "child." + i + ".bfName", "")
+                Int wantMum = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".motherId", 0)
+                Int b = 0
+                Bool done = False
+                While b < babies && !done
+                    Actor cand = StorageUtil.FormListGet(None, "FW.Babys", b) as Actor
+                    If cand != None && StorageUtil.GetIntValue(cand, "FW.Child.GrownUp", 0) == 1
+                        Actor cm = StorageUtil.GetFormValue(cand, "FW.Child.Mother", None) as Actor
+                        Int cmId = 0
+                        If cm != None
+                            cmId = cm.GetFormID()
+                        EndIf
+                        String cn = StorageUtil.GetStringValue(cand, "FW.Child.Name", "")
+                        If want != "" && cn == want && cmId == wantMum
+                            Diag(LOG_INFO(), JsonUtil.GetStringValue(StoreFile(), \
+                                "child." + i + ".name", "?") + " has grown up (Beeing Female).")
+                            RecordSuccession(i, cand)
+                            done = True
+                        EndIf
+                    EndIf
+                    b += 1
+                EndWhile
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+EndFunction
+
+; ---------------------------------------------------------------------------
+; OWNING A FERTILITY MODE BIRTH
+;
+; Fertility Mode registers a child when it MATURES, not when it is born -
+; PlayerChildAdd is called from inside CheckBabyGrowth's day-ten spawn branch.
+; Everything this mod knew about a child therefore arrived ten days late, from
+; the very event that taking the baby item is meant to prevent. That circularity
+; is why kinStageConfiscate did nothing at all until now.
+;
+; So when the item is taken, the birth has to be recorded from the LABOUR event
+; instead, and this mod takes over what Fertility Mode would have decided:
+; gender, name, and when a body appears.
+;
+; STRICTLY OPT-IN, AND OFF BY DEFAULT. With kinStageConfiscate off, none of this
+; runs and the original day-ten path is untouched - which matters because that
+; path is the one with play-verified behaviour behind it.
+; ---------------------------------------------------------------------------
+
+Bool Function OwnsFmrBirth() Global
+    { True when this mod, not Fertility Mode, is running the childhood. }
+    Return HasFmr() && StagesEnabled() && ConfiscateEnabled()
+EndFunction
+
+Int Function FmrRaceIndex(_JSW_BB_Storage akStore, Actor akMother) Global
+    { The mother's row in Fertility Mode's parallel race arrays.
+
+      BirthMotherRace, BirthChildRace, BirthBabyRace and Children are all
+      indexed the same way, so one lookup serves for the child's race and its
+      actor base. Vampire mothers live in a second array of the same order. }
+    If akStore == None || akMother == None
+        Return -1
+    EndIf
+    Race r = akMother.GetRace()
+    If r == None
+        Return -1
+    EndIf
+    Race[] normal = akStore.BirthMotherRace
+    Int hit = -1
+    If normal != None
+        hit = normal.Find(r)
+    EndIf
+    If hit < 0
+        Race[] vamp = akStore.BirthMotherRaceVampire
+        If vamp != None
+            hit = vamp.Find(r)
+        EndIf
+    EndIf
+    Return hit
+EndFunction
+
+Function ClaimFmrBirth(Actor akMother, String asFather, Int aiFatherId) Global
+    { Records a Fertility Mode birth at the moment it happens.
+
+      THE NAME IS DEFERRED, NOT SKIPPED. A roster entry is keyed by its name,
+      so one is needed now; but labour fires wherever the mother is, which may
+      be mid-combat or on the far side of Skyrim, and a modal text box there is
+      hostile. The record takes a placeholder and raises needsName, and
+      PromptPendingNames asks when the player is actually able to answer. }
+    If akMother == None
+        Return
+    EndIf
+    Int grp = NextBirthGroup()
+    String placeholder = "(unnamed " + grp + ")"
+    JsonUtil.StringListAdd(StoreFile(), "roster", placeholder, False)
+    Int idx = JsonUtil.StringListFind(StoreFile(), "roster", placeholder)
+    If idx < 0
+        Diag(LOG_ERROR(), "ClaimFmrBirth: could not open a roster entry.")
+        Return
+    EndIf
+
+    ; GENDER IS OURS NOW. Fertility Mode rolled it at spawn time, inside the
+    ; branch we are suppressing, so nobody else is going to decide it.
+    Int sex = Utility.RandomInt(0, 1)
+    String word = "son"
+    If sex == 1
+        word = "daughter"
+    EndIf
+
+    String mumName = akMother.GetDisplayName()
+    Int mumId = akMother.GetFormID()
+    RememberPerson(akMother)
+    ; The mother can never also be the father - same rule as both other paths.
+    If aiFatherId != 0 && aiFatherId == mumId
+        aiFatherId = 0
+        asFather = ""
+    EndIf
+
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".name", placeholder)
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".mother", mumName)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".motherId", mumId)
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".father", asFather)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".fatherId", aiFatherId)
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".gender", word)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".sex", sex)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".source", SRC_FMR())
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".birthGroup", grp)
+    JsonUtil.SetFloatValue(StoreFile(), "child." + idx + ".born", Utility.GetCurrentGameTime())
+    ; OWNED means we claimed this birth and are responsible for its body. Every
+    ; record that predates this feature lacks the key, which is exactly right:
+    ; nothing already on the roster should suddenly grow an actor.
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".owned", 1)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".needsName", 1)
+    If mumId != 0
+        JsonUtil.IntListAdd(StoreFile(), ParentPath(mumId), idx, False)
+    EndIf
+    If aiFatherId != 0
+        JsonUtil.IntListAdd(StoreFile(), ParentPath(aiFatherId), idx, False)
+    EndIf
+    JsonUtil.Save(StoreFile())
+    RefreshParentCount(mumId)
+    RefreshParentCount(aiFatherId)
+    RefreshChildTotal()
+
+    Diag(LOG_WARN(), "Claimed the birth of " + mumName + "'s " + word + \
+        " (birth group " + grp + "). This mod is running this childhood; " + \
+        "Fertility Mode will not mature the child on its own timer.")
+    If Notify()
+        Debug.Notification("[Kinship] " + mumName + " has given birth")
+    EndIf
+EndFunction
+
+Int Function OwnedBirthFor(Int aiMotherId) Global
+    { The claimed child THIS mother is currently carrying for us, or -1.
+
+      KEYED ON THE MOTHER, not merely on time. An earlier version asked only
+      whether any claimed birth was pending, which is a different question with
+      the same answer most of the time - and the wrong answer exactly when it
+      matters. A player with one claimed birth in flight and one older Fertility
+      Mode baby maturing would have had the legitimate child silently dropped,
+      because some claim was pending and nothing checked whose.
+
+      The window is FMR's own BabyDuration plus slack, read live rather than
+      assumed: three days and thirty are both configurable and only FMR knows
+      which is set. }
+    If aiMotherId == 0
+        Return -1
+    EndIf
+    Float window = BabyDurationDays()
+    If window <= 0.0
+        window = 14.0
+    EndIf
+    window += 2.0
+    Float now = Utility.GetCurrentGameTime()
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".owned", 0) == 1 \
+                && JsonUtil.GetIntValue(StoreFile(), "child." + i + ".motherId", 0) == aiMotherId
+            Float born = JsonUtil.GetFloatValue(StoreFile(), "child." + i + ".born", 0.0)
+            If born > 0.0 && (now - born) >= 0.0 && (now - born) <= window
+                Return i
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    Return -1
+EndFunction
+
+Function AdoptInFlightBirths()
+    { Claims babies that were already on the way when the feature was switched
+      on.
+
+      THE CASE THIS EXISTS FOR: a mother who delivered before confiscation was
+      enabled is carrying a baby item right now. Her labour event fired when
+      nothing was listening for it, so there is no claimed record; and with no
+      record, nothing ever visits her to take the item. Left alone she would
+      quietly complete under Fertility Mode's rules ten days later - which is
+      not what turning the setting on says it does.
+
+      So the in-flight window is swept once and those births are claimed
+      retroactively. THE FATHER IS STILL READABLE at this point and will not be
+      later: CheckBabyGrowth does not clear LastFather until it creates the
+      child record, which is the very thing being pre-empted.
+
+      Also makes the duplicate guard nearly unreachable, since after this pass
+      every baby in flight is one we own. }
+    If !OwnsFmrBirth()
+        Return
+    EndIf
+    _JSW_BB_Storage store = ResolveStorage()
+    If store == None
+        Return
+    EndIf
+    Float[] added = store.BabyAdded
+    Form[] tracked = store.TrackedActors
+    If added == None || tracked == None
+        Return
+    EndIf
+    Float window = BabyDurationDays()
+    If window <= 0.0
+        window = 14.0
+    EndIf
+    Float now = Utility.GetCurrentGameTime()
+    Int i = 0
+    While i < tracked.Length
+        Actor mum = tracked[i] as Actor
+        If mum != None && i < added.Length && added[i] > 0.0
+            Float age = now - added[i]
+            ; Inside the window only. Past it Fertility Mode has either already
+            ; matured the child or is about to on its own next poll, and racing
+            ; that is how one child ends up recorded twice.
+            If age >= 0.0 && age < window && OwnedBirthFor(mum.GetFormID()) < 0 \
+                    && StorageUtil.GetIntValue(mum, "SNKin_ByPlayer", 0) == 1
+                String dadName = FatherNameAt(i)
+                Int dadId = 0
+                Actor player = Game.GetPlayer()
+                If dadName == player.GetDisplayName()
+                    dadId = player.GetFormID()
+                ElseIf dadName != ""
+                    dadId = PersonIdByName(dadName)
+                EndIf
+                ; THE FLAG ABOVE ALREADY SETTLED THIS. Reaching here at all
+                ; required SNKin_ByPlayer, which is only ever set for a birth
+                ; the player fathered - so if Fertility Mode's father arrays
+                ; have gone empty in the days since, the answer is still known.
+                ;
+                ; Not hypothetical: both mothers adopted on the live save came
+                ; through with no father at all, because FatherNameAt reads
+                ; CurrentFather then LastFather and by then Fertility Mode had
+                ; cleared both. Two of the player's children were recorded
+                ; fatherless with the answer sitting in a flag we had checked
+                ; one line earlier.
+                ;
+                ; Guarded on the mother NOT being the player, because on a
+                ; female playthrough the player is the one giving birth and the
+                ; father is somebody else entirely.
+                If dadId == 0 && mum != player
+                    dadId = player.GetFormID()
+                    dadName = player.GetDisplayName()
+                    Diag(LOG_INFO(), "Fertility Mode no longer remembers the father for " + \
+                        mum.GetDisplayName() + "; recording the player, who is who the " + \
+                        "delivery was flagged to in the first place.")
+                EndIf
+                Diag(LOG_WARN(), "Adopting a birth already in progress: " + \
+                    mum.GetDisplayName() + " has carried a baby for " + age + \
+                    " days. This mod is taking over that childhood.")
+                ClaimFmrBirth(mum, dadName, dadId)
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+EndFunction
+
+Bool Function RenameChildStatic(String asOldName, String asNewName) Global
+    { Renames a child from the panel.
+
+      THE ONE FIELD THAT HAD NO EDITOR. Mother, father and stage were all
+      correctable and the name was not - so a child the naming prompt missed
+      was stuck as "(unnamed 11)" with nowhere to fix it. That is exactly the
+      record most in need of an edit.
+
+      REFUSES A DUPLICATE rather than taking it. The roster is keyed by name:
+      a second Maya would be unfindable by ChildIndex, and every later lookup
+      would silently resolve to the first one. }
+    If asNewName == "" || asOldName == asNewName
+        Return False
+    EndIf
+    Int idx = ChildIndex(asOldName)
+    If idx < 0
+        Diag(LOG_ERROR(), "Rename: no child named '" + asOldName + "'.")
+        Return False
+    EndIf
+    If JsonUtil.StringListFind(StoreFile(), "roster", asNewName) >= 0
+        Diag(LOG_WARN(), "Rename refused: there is already a " + asNewName + \
+            " on the family roster.")
+        Return False
+    EndIf
+    RenameChildRecord(idx, asNewName)
+    Diag(LOG_INFO(), "Renamed " + asOldName + " to " + asNewName + ".")
+    Return True
+EndFunction
+
+Bool Function SetChildStageStatic(String asChildName, Int aiStage) Global
+    { Corrects a child's life stage by hand. The panel's write path.
+
+      A GLOBAL TWIN for the same reason ClearParentStatic is one:
+      DispatchStaticCall cannot reach an instance method, and resolving the
+      quest from the DLL would mean hardcoding our own plugin filename.
+
+      PLANTS RATHER THAN SETS, which is the whole correctness of it. Writing
+      child.N.stage alone would last exactly until the next sweep, when the
+      clock recomputed the old value from the birth stamp and overwrote it.
+      PlantStage moves the FLOOR as well, so the arithmetic and the correction
+      agree from now on and the child ages onward from where it was put rather
+      than being frozen there. }
+    If aiStage < 0 || aiStage > STAGE_ADULT()
+        Return False
+    EndIf
+    Int idx = ChildIndex(asChildName)
+    If idx < 0
+        Diag(LOG_ERROR(), "SetChildStage: no child named '" + asChildName + "'.")
+        Return False
+    EndIf
+    PlantStage(idx, aiStage)
+    ; A HUMAN DECISION OUTRANKS AN INFERENCE, permanently.
+    ;
+    ; Without this the correction did not stick for any child who was not
+    ; beside the player: the body could not answer, so the next refresh fell
+    ; through to SNKin_Bound, read "summoned adult", and planted them back at
+    ; adult in the same instant the panel wrote the change. Ten edits, five of
+    ; which silently undid themselves depending on which cell the child was in.
+    ;
+    ; The BODY may still override this - it is direct evidence, and a visibly
+    ; grown actor is grown whatever the record says. Only proxies defer.
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".manualStage", 1)
+    ; The stamp the clock ages from has to move too, or the child is instantly
+    ; as old as its record claims and jumps straight back out of the stage it
+    ; was just put in.
+    JsonUtil.SetFloatValue(StoreFile(), "child." + idx + ".stageBase", \
+        Utility.GetCurrentGameTime())
+    JsonUtil.Save(StoreFile())
+    Diag(LOG_INFO(), asChildName + " set to " + StageName(aiStage) + " by hand.")
+
+    ; Republish immediately where there is an actor, so the correction is
+    ; visible in the next bio rather than after the next sweep.
+    Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".refId", 0)
+    If rid != 0
+        Actor a = Game.GetFormEx(rid) as Actor
+        If a != None
+            RefreshChildStage(idx, a)
+        EndIf
+    EndIf
+    Return True
+EndFunction
+
+Function RenameChildRecord(Int aiIdx, String asNewName) Global
+    { Renames a record, roster key included.
+
+      The roster is the index, so both halves must move together or the entry
+      becomes unfindable by name - which is how a child stops being resolvable
+      to its own bio. }
+    If aiIdx < 0 || asNewName == ""
+        Return
+    EndIf
+    JsonUtil.StringListSet(StoreFile(), "roster", aiIdx, asNewName)
+    JsonUtil.SetStringValue(StoreFile(), "child." + aiIdx + ".name", asNewName)
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".needsName", 0)
+    JsonUtil.Save(StoreFile())
+    Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0)
+    If rid != 0
+        Actor a = Game.GetFormEx(rid) as Actor
+        If a != None
+            ; true = force. The base is shared between children of one
+            ; archetype, so SetName would rename every sibling using it.
+            a.SetDisplayName(asNewName, True)
+        EndIf
+    EndIf
+EndFunction
+
+String Function NamesFile() Global
+    { Our own name pools. NOT Fertility Mode's file.
+
+      FMR keeps its list at StorageUtilData/FertilityModeNames.json and reads it
+      through JContainers, as two flat arrays - "Male" and "Female" - with a
+      comment in its own source noting it dropped race-specific keys for
+      simplicity. Two reasons not to read it directly: it would add JContainers
+      as a dependency this mod does not otherwise need, and its top-level arrays
+      are not in PapyrusUtil's typed-bucket layout, so JsonUtil cannot see them.
+
+      So the pools are ours, seeded FROM FMR's 301 names as the fallback and
+      extended with the race-specific lists it does not have. Anyone can add
+      more by editing the file; nothing here is compiled in. }
+    Return "../SNKin_Names"
+EndFunction
+
+String Function RaceKey(Actor akWho) Global
+    { A race name folded into a lookup key: "Dark Elf" -> "darkelf".
+
+      Returns "" when there is nothing to fold, and the caller then falls back
+      to the flat pool - which is the same behaviour as a race that simply has
+      no list of its own. }
+    If akWho == None
+        Return ""
+    EndIf
+    Race r = akWho.GetRace()
+    If r == None
+        Return ""
+    EndIf
+    String n = r.GetName()
+    If n == ""
+        Return ""
+    EndIf
+    ; Lowercase and drop spaces. StringUtil has no replace, so this walks the
+    ; string once - it runs at most once per naming prompt, not per frame.
+    String out = ""
+    Int i = 0
+    While i < StringUtil.GetLength(n)
+        String c = StringUtil.GetNthChar(n, i)
+        If c != " " && c != "-"
+            out += c
+        EndIf
+        i += 1
+    EndWhile
+    Return ToLower(out)
+EndFunction
+
+String Function ToLower(String asText) Global
+    { Papyrus has no case conversion. Walks the string against a pair of
+      alphabets, which is ugly and completely adequate for a race name. }
+    String upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    String lower = "abcdefghijklmnopqrstuvwxyz"
+    String out = ""
+    Int i = 0
+    While i < StringUtil.GetLength(asText)
+        String c = StringUtil.GetNthChar(asText, i)
+        Int at = StringUtil.Find(upper, c)
+        If at >= 0
+            out += StringUtil.GetNthChar(lower, at)
+        Else
+            out += c
+        EndIf
+        i += 1
+    EndWhile
+    Return out
+EndFunction
+
+String[] Function NamePool(String asRaceKey, Int aiSex) Global
+    { Names to offer, race-specific where a list exists and flat otherwise.
+
+      A missing race list is not an error - most races will not have one, and
+      the fallback is a full 150-name pool rather than nothing. }
+    String sex = "male"
+    If aiSex == 1
+        sex = "female"
+    EndIf
+    Int n = 0
+    If asRaceKey != ""
+        n = JsonUtil.StringListCount(NamesFile(), asRaceKey + "." + sex)
+    EndIf
+    ; NOT "key" - Key is a Skyrim form type, and naming a local after one fails
+    ; with "cannot name a variable the same as a known type". Same trap as Race,
+    ; Parent and Light, all of which this file already documents.
+    String poolKey = asRaceKey + "." + sex
+    If n <= 0
+        poolKey = sex
+        n = JsonUtil.StringListCount(NamesFile(), poolKey)
+    EndIf
+    If n <= 0
+        Return None
+    EndIf
+    Return JsonUtil.StringListToArray(NamesFile(), poolKey)
+EndFunction
+
+Bool Function NameFromList() Global
+    Return SkyrimNetApi.GetConfigBool(CFG(), "kinNameFromList", False)
+EndFunction
+
+Function PromptPendingNames() Global
+    { Asks for a name for every claimed child that is waiting for one.
+
+      ALL OF THEM, ONE AFTER ANOTHER, matching what Fertility Mode does - it
+      pops however many boxes it needs and cycles through them. An earlier
+      version asked about one child per sweep on the theory that consecutive
+      modal boxes were worse than waiting. In practice the wait is worse: two
+      mothers adopted in the same sweep left one child named and one sitting as
+      "(unnamed 11)" with no visible reason, and before the poll was fixed the
+      queue only advanced on a game load.
+
+      Still not during a fight or a menu. That part was right. }
+    If !OwnsFmrBirth()
+        Return
+    EndIf
+    If Utility.IsInMenuMode() || Game.GetPlayer().IsInCombat()
+        Return
+    EndIf
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".needsName", 0) == 1
+            String word = JsonUtil.GetStringValue(StoreFile(), "child." + i + ".gender", "child")
+            String mum = JsonUtil.GetStringValue(StoreFile(), "child." + i + ".mother", "")
+            String given = ""
+            If NameFromList()
+                ; RACE FROM THE MOTHER, since the child has no actor yet - it is
+                ; being named before it has a body, which is the whole point of
+                ; owning the birth.
+                Actor mother = Game.GetFormEx( \
+                    JsonUtil.GetIntValue(StoreFile(), "child." + i + ".motherId", 0)) as Actor
+                given = SNKin_Picker.AskChildNameFromList(word, mum, \
+                    NamePool(RaceKey(mother), ChildSex(i)))
+            Else
+                given = SNKin_Picker.AskChildName(word, mum)
+            EndIf
+            If given != ""
+                RenameChildRecord(i, given)
+                Diag(LOG_INFO(), "Named " + mum + "'s " + word + " " + given + ".")
+            Else
+                ; DECLINED IS AN ANSWER, and asking again every sweep would be
+                ; harassment. A generated name keeps the record usable and the
+                ; panel can still change it.
+                RenameChildRecord(i, GeneratedChildName(i, word))
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+EndFunction
+
+String Function GeneratedChildName(Int aiIdx, String asWord) Global
+    { A last-resort name. Deliberately obvious rather than pseudo-Nordic - a
+      placeholder that looks like a real name is one nobody notices to fix. }
+    String mum = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".mother", "")
+    If mum != ""
+        Return mum + "'s " + asWord
+    EndIf
+    Return "Unnamed " + asWord
+EndFunction
+
+Int Function ChildSex(Int aiIdx) Global
+    { 0 male, 1 female, for indexing Fertility Mode's paired base arrays.
+
+      FALLS BACK TO THE GENDER WORD, because `sex` only exists on records this
+      mod created itself. Every child that came through Fertility Mode's own
+      registration has "son" or "daughter" and no number, and defaulting those
+      to 0 would have made every one of them a boy. }
+    Int sex = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".sex", -1)
+    If sex >= 0
+        Return sex
+    EndIf
+    If JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".gender", "") == "daughter"
+        Return 1
+    EndIf
+    Return 0
+EndFunction
+
+Function InheritHome(Actor akChild, Actor akMother) Global
+    { Gives a newly embodied child its mother's home.
+
+      SEVERACTIONS OWNS WHERE PEOPLE LIVE in this setup, and it keeps a home
+      per actor in the SKSE co-save rather than in StorageUtil - its own
+      comment calls that "unreliable string persistence", which matches what
+      this mod learned the hard way about StorageUtil strings not surviving a
+      reload.
+
+      SOFT, LIKE EVERY OTHER OUTSIDE DEPENDENCY HERE. Absent SeverActions this
+      returns immediately and the child simply has no home, which is the same
+      position Fertility Mode's own spawned children are in. Nothing about
+      parentage or stages depends on it. }
+    If akChild == None || akMother == None
+        Return
+    EndIf
+    If Game.GetModByName("severactions.esp") == 255 && \
+       Game.GetLightModByName("severactions.esp") == 255
+        Return
+    EndIf
+    String where = SeverActionsNative.Native_GetHome(akMother)
+    If where == ""
+        ; She has no home recorded either. Nothing to inherit, and inventing
+        ; one would put the child somewhere its mother is not.
+        Diag(LOG_DEBUG(), akMother.GetDisplayName() + " has no home recorded, so " + \
+            akChild.GetDisplayName() + " inherits none.")
+        Return
+    EndIf
+    SeverActionsNative.Native_SetHome(akChild, where)
+    Diag(LOG_INFO(), akChild.GetDisplayName() + " now lives where " + \
+        akMother.GetDisplayName() + " does: " + where + ".")
+EndFunction
+
+Bool Function SpawnChildBodyStatic(String asChildName) Global
+    { Gives a recorded child an actor, on demand. The panel's entry point.
+
+      THE CASE THIS EXISTS FOR: a child Fertility Mode named and then did
+      nothing with. It was never sent to training and never adopted, so it has
+      a record, a mother and a father, and no body anywhere in the world - and
+      no way to acquire one, because adoption is capped and training is a
+      one-way trip to adulthood. On the save this was written against there
+      were thirty-six of them.
+
+      DELIBERATELY ONE AT A TIME. The automatic path is gated on `owned`, which
+      only births this mod claimed ever carry, precisely so that switching
+      stages on could never spawn a roster's worth of NPCs at once. This opens
+      that gate for a single child the player has actually chosen. }
+    Int idx = ChildIndex(asChildName)
+    If idx < 0
+        Diag(LOG_ERROR(), "SpawnChildBody: no child named '" + asChildName + "'.")
+        Return False
+    EndIf
+    If JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".hidden", 0) == 1
+        Return False
+    EndIf
+    Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".refId", 0)
+    If rid != 0 && Game.GetFormEx(rid) != None
+        Diag(LOG_WARN(), asChildName + " already has a body.")
+        Return False
+    EndIf
+    ; TOO YOUNG FOR ONE. Newborn and infant have no actor in this model - a
+    ; newborn is a carried item, not a body - so a request for one is refused
+    ; rather than quietly producing a toddler-sized newborn. A stage of -1 means
+    ; stages are switched off entirely, and then there is no age to object to.
+    Int st = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".stage", -1)
+    If st >= 0 && st < 2
+        Diag(LOG_WARN(), asChildName + " is a " + StageName(st) + \
+            " and has no body at that age. Wait until toddler, or set the stage by hand.")
+        Return False
+    EndIf
+    ; Clear a stale marker so a previous failure does not block a retry after
+    ; the reason for it has been fixed.
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".spawnFailed", 0)
+    JsonUtil.Save(StoreFile())
+    Return SpawnOwnedChild(idx) != None
+EndFunction
+
+Actor Function SpawnOwnedChild(Int aiIdx) Global
+    { Gives a claimed child a body, at the stage where one becomes true.
+
+      NOT AT FERTILITY MODE'S BABY DURATION. Newborn and infant have no body in
+      this model at all - a newborn is a carried item, not an actor - so the
+      first stage that warrants one is toddler. Spawning at ten days would put
+      a walking child on a record that still says infant, which is the exact
+      contradiction taking the item was meant to remove.
+
+      Uses Fertility Mode's own child bases, which is the one thing a birth
+      event cannot provide and the only remaining hard dependency on it. }
+    _JSW_BB_Storage store = ResolveStorage()
+    If store == None
+        Return None
+    EndIf
+    Int mumId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".motherId", 0)
+    Actor mum = Game.GetFormEx(mumId) as Actor
+    Int raceIdx = FmrRaceIndex(store, mum)
+    If raceIdx < 0
+        Diag(LOG_WARN(), "SpawnOwnedChild: " + \
+            JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+            " has no supported child race for its mother - no body will appear. " + \
+            "The record and its parentage are unaffected.")
+        ; Marked so this is not retried every sweep forever.
+        JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".spawnFailed", 1)
+        JsonUtil.Save(StoreFile())
+        Return None
+    EndIf
+    ActorBase[] bases = store.Children
+    Int sex = ChildSex(aiIdx)
+    Int slot = 2 * raceIdx + sex
+    If bases == None || slot < 0 || slot >= bases.Length || bases[slot] == None
+        JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".spawnFailed", 1)
+        JsonUtil.Save(StoreFile())
+        Return None
+    EndIf
+
+    ; AT THE MOTHER WHEN SHE IS THERE, at the player otherwise. A child that
+    ; materialises next to its mother reads as having been brought to you;
+    ; one that appears at the player when she is elsewhere at least appears
+    ; somewhere the player will notice rather than in an empty cell.
+    ObjectReference at = mum as ObjectReference
+    If at == None || !mum.Is3DLoaded()
+        at = Game.GetPlayer() as ObjectReference
+    EndIf
+    Actor kid = at.PlaceActorAtMe(bases[slot]) as Actor
+    If kid == None
+        Diag(LOG_WARN(), "SpawnOwnedChild: PlaceActorAtMe failed.")
+        Return None
+    EndIf
+    kid.QueueNiNodeUpdate()
+    String nm = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "")
+    If nm != ""
+        kid.SetDisplayName(nm, True)
+    EndIf
+    kid.MakePlayerFriend()
+    If mum != None
+        kid.SetRelationshipRank(mum, 2)
+        mum.SetRelationshipRank(kid, 2)
+    EndIf
+    Int dadId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".fatherId", 0)
+    Actor dad = Game.GetFormEx(dadId) as Actor
+    If dad != None
+        kid.SetRelationshipRank(dad, 2)
+        dad.SetRelationshipRank(kid, 2)
+    EndIf
+
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".refId", kid.GetFormID())
+    JsonUtil.Save(StoreFile())
+    ; BEFORE BindChildRef, which sets SNKin_Bound - and SNKin_Bound alone used
+    ; to mean "summoned adult". This says who placed the actor, so the stage
+    ; rules can tell a child we spawned from an adult Fertility Mode summoned.
+    StorageUtil.SetIntValue(kid, "SNKin_OurSpawn", 1)
+    ; AND IN THE STORE, because the co-save flag is only readable with the
+    ; actor in hand and the stage rules must answer for children nowhere
+    ; near the player. This one is durable and index-keyed.
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".ourSpawn", 1)
+    BindChildRef(kid, aiIdx)
+    MarkChildActor(kid, aiIdx)
+    ; A child belongs where its mother lives. Soft - no SeverActions, no home,
+    ; and nothing else is affected.
+    InheritHome(kid, mum)
+    Diag(LOG_INFO(), (nm + " has a body now (" + StageName(StageForChild(aiIdx)) + ")."))
+    Return kid
+EndFunction
+
+Int Function ChildSource(Int aiIdx) Global
+    { Which fertility mod this child came from. Absent means Fertility Mode -
+      every record written before this existed came from that path. }
+    Return JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".source", SRC_FMR())
+EndFunction
+
+Function CarryIdentity(Int aiIdx, String asWasUuid, String asNowUuid) Global
+    { The one swappable function. Plan A becomes a one-line body here.
+
+      Deliberately a NO-OP THAT SAYS SO rather than a silent one. Someone who
+      shortens every stage duration to a day will reach this within an evening,
+      and "the memories did not carry" is a limitation they can understand
+      where silence would read as a bug. The parentage still renders either
+      way - that comes from our own store and is reference-independent. }
+    If asWasUuid == "" || asNowUuid == "" || asWasUuid == asNowUuid
+        Return
+    EndIf
+    Diag(LOG_WARN(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+        " grew up into a new reference. Parentage carries over; SkyrimNet " + \
+        "memories from childhood do not, because a succession cannot yet be " + \
+        "declared for a runtime-spawned actor. The pair is recorded and can be " + \
+        "declared retroactively.")
+EndFunction
+
+; ---------------------------------------------------------------------------
+; SIZE
+;
+; Skyrim has a child body and an adult body and nothing between, so toddler,
+; child and adolescent all wear the SAME mesh and are visually identical. That
+; is the one thing the record layer cannot show, and scale is the only lever
+; that needs no new assets.
+;
+; WHY SCALING A CHILD WORKS WHEN SCALING AN ADULT DOES NOT. A human child is
+; not a small adult - head-to-body is roughly 1:4 at birth against 1:7.5 grown -
+; so a shrunken ADULT reads as a dwarf. We are shrinking the CHILD mesh, whose
+; proportions are already a child's, so this interpolates inside a correct
+; proportion set instead of extrapolating out of the wrong one. It reads as a
+; younger child, which is exactly what it is.
+;
+; SetScale, NOT NiOverride, and the reason is where the state lives.
+; NiOverride's node transforms are serialised into the CO-SAVE - the same store
+; that had to be rebuilt by hand after a deployment corrupted it, and which does
+; not follow the roster. SetScale is a property of the reference in the main
+; save. FMR reaches for NiOverride/NetImmerse itself, but only on "NPC Belly"
+; and the breast nodes under its own key, and it never touches whole-actor
+; scale, so there is nothing here to collide with.
+;
+; THE MIDDLE STAGE IS PINNED AT 1.0 ON PURPOSE. Every artifact of scaling -
+; furniture alignment, foot sliding on an authored stride - is proportional to
+; how far from 1.0 the actor is. Pinning `child` there means the stage that
+; holds most of a childhood has NO artifacts at all, and the two neighbours sit
+; close enough that the misalignment stays subtle.
+; ---------------------------------------------------------------------------
+
+Bool Function StageScalingEnabled() Global
+    ; SEPARATE FROM kinStagesEnabled, deliberately. The record layer is exact
+    ; and the visual trick is a compromise; someone who finds a child clipping
+    ; into a chair intolerable should be able to drop the size and keep the
+    ; stages, without giving up the parentage the stages feed.
+    Return SkyrimNetApi.GetConfigBool(CFG(), "kinStageScaling", False)
+EndFunction
+
+Float Function ScaleForStage(Int aiStage) Global
+    ; ONLY THE THREE STAGES THAT SHARE A BODY ARE SCALED.
+    ;
+    ; Newborn and infant return 1.0 because there is no actor to scale - FMR
+    ; carries a baby ITEM, not a reference - and faking one at 0.3 would be a
+    ; doll with broken collision, worse than the honest absence.
+    ;
+    ; Adult returns 1.0 because it is the restore path. A child who grows up
+    ; must come back to full size, and FMR's SummonAdultChild can re-use the
+    ; same reference - a 0.82 left behind would be a permanently stunted adult.
+    If aiStage == 2
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinScaleToddler", 0.82)
+    ElseIf aiStage == 3
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinScaleChild", 1.0)
+    ElseIf aiStage == 4
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinScaleAdolescent", 1.12)
+    EndIf
+    Return 1.0
+EndFunction
+
+Float Function HeightVariance(Int aiIdx) Global
+    { This child's personal height multiplier. 1.0 until something sets it.
+
+      NOTHING WRITES THIS YET, and it is here anyway because of what it costs
+      later if it is not. Real children of one age are not one height, and the
+      obvious next step is a small per-child multiplier so a roster does not
+      look like a rank of clones.
+
+      Reserved now because the shape of the final scale is the whole question.
+      Multiplicative rather than additive means a tall toddler is still tall as
+      an adolescent AND as an adult - stage 5's base is 1.0, so an adult's size
+      becomes exactly their variance and adult height variation falls out of
+      this for free. Retrofitting that later would mean revisiting every scale
+      already written; reading a default now costs one lookup. }
+    Float v = JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".scaleVar", 1.0)
+    If v <= 0.0
+        Return 1.0
+    EndIf
+    Return v
+EndFunction
+
+Function ApplyStageScale(Int aiIdx, Actor akKid, Int aiStage) Global
+    { Sizes a child's actor to its stage, and puts it back when switched off. }
+    If akKid == None
+        Return
+    EndIf
+    ; HANDS OFF A CHILD SOMEBODY ELSE IS GROWING. Beeing Female grows children
+    ; by scale on a clock of its own - the same technique, running already - so
+    ; writing our own scale here would be two systems fighting over one value
+    ; every sweep, and whichever wrote last would win. Its stages are better
+    ; served by leaving them alone than by being reproduced.
+    If SourceOwnsGrowth(ChildSource(aiIdx))
+        Return
+    EndIf
+    String f = StoreFile()
+
+    ; THE BASELINE IS WRITE-ONCE, and that is what stops it compounding. Read
+    ; the actor's own scale before we have ever touched it and keep it; every
+    ; later size is computed from that stored value rather than from whatever
+    ; we left behind last sweep. 0.0 means "never scaled this child", which is
+    ; also the flag the restore path below tests.
+    Float base = JsonUtil.GetFloatValue(f, "child." + aiIdx + ".baseScale", 0.0)
+
+    If !StagesEnabled() || !StageScalingEnabled()
+        ; SWITCHED OFF MEANS PUT IT BACK. Leaving a shrunken actor behind after
+        ; the feature is disabled would be a permanent change made by a setting
+        ; that is no longer on - the user would have no way to connect the two.
+        If base > 0.0
+            If Math.Abs(akKid.GetScale() - base) > 0.01
+                akKid.SetScale(base)
+            EndIf
+            ; THE BASELINE IS KEPT, NOT CLEARED. Clearing it meant the next
+            ; enable had to re-measure - and re-measuring races the SetScale
+            ; just issued above, so a baseline could be captured while a stage
+            ; scale was still applied and then compound. Measured: Titus's
+            ; baseline drifted 0.80 -> 0.64 across one off/on cycle.
+            ;
+            ; A baseline that is already known is always better than one
+            ; measured again, because it was taken before anything touched the
+            ; actor.
+        EndIf
+        Return
+    EndIf
+
+    If base <= 0.0
+        base = akKid.GetScale()
+        If base <= 0.0
+            base = 1.0
+        EndIf
+        JsonUtil.SetFloatValue(f, "child." + aiIdx + ".baseScale", base)
+        JsonUtil.Save(f)
+    EndIf
+
+    Float want = base * ScaleForStage(aiStage) * HeightVariance(aiIdx)
+
+    ; A FLOOR AND A CEILING, because these are user-editable numbers and the
+    ; failure is not symmetrical with the mistake. A typo of 0.082 for 0.82
+    ; produces an actor that cannot path, cannot use furniture and may not be
+    ; clickable - unrecoverable without editing the store by hand.
+    If want < 0.5
+        want = 0.5
+    ElseIf want > 1.5
+        want = 1.5
+    EndIf
+
+    ; IDEMPOTENT, which matters because this runs on every child every sweep.
+    ; Comparing floats with an epsilon rather than for equality: GetScale
+    ; returns what the engine stored, not the bits we sent it.
+    If Math.Abs(akKid.GetScale() - want) > 0.01
+        akKid.SetScale(want)
+        ; SHOWS THE ARITHMETIC, NOT JUST THE ANSWER, and at INFO rather than
+        ; DEBUG so it is visible by default.
+        ;
+        ; THE SETTING IS A RATIO, NOT A SIZE, and nothing said so until a child
+        ; visibly shrank further than the number implied. Fertility Mode's child
+        ; actors are natively 0.8 - that is the base object's own scale - so a
+        ; toddler factor of 0.82 lands at 0.66, a third smaller than normal
+        ; rather than the fifth the number reads like.
+        ;
+        ; The ratio is deliberate: it is what lets this work with any mod that
+        ; sizes children differently, and "child" pinned at 1.00 means untouched
+        ; whatever untouched happens to be. But an effective value nobody can
+        ; see is a setting nobody can tune, so it is spelled out here.
+        Diag(LOG_INFO(), JsonUtil.GetStringValue(f, "child." + aiIdx + ".name", "?") + \
+            " scaled to " + want + " as " + StageName(aiStage) + \
+            " (normal size " + base + " x " + ScaleForStage(aiStage) + ").")
+    EndIf
+EndFunction
+
+; ---------------------------------------------------------------------------
+; THE BABY ITEM
+;
+; Fertility Mode hands the mother a baby ARMOR at birth and spawns a child NPC
+; when it has been worn for BabyDuration - ten game days by default. That is
+; FMR's whole childhood: item, wait, child.
+;
+; Life stages are a DIFFERENT childhood, and the two cannot both be true. Left
+; alone, FMR matures the child on day ten while this mod still has it recorded
+; as an infant, and the player is then looking at a walking child whose own bio
+; calls it a newborn.
+;
+; So opting into stages takes the item. Verified against FMR's source rather
+; than assumed - _JSW_BB_HandlerQuestAliasScript.CheckBabyGrowth gates the
+; entire spawn on
+;
+;     if (baby && ((now - Storage.BabyAdded[i]) as int) >= BabyDuration...)
+;
+; where `baby` is whichever BirthBabyRace armor was found IN THE INVENTORY. No
+; item, no spawn. The EventLock it takes on entry is released unconditionally
+; at the end of the function, so an early exit down that path cannot wedge FMR.
+;
+; THIS CANNOT BE UNDONE, and that is the whole reason it is a separate opt-in
+; rather than something kinStagesEnabled implies. Turning stages back off later
+; does not hand the baby back: the item is gone and FMR's clock is cleared.
+; The setting is worded to say so.
+; ---------------------------------------------------------------------------
+
+Bool Function ConfiscateEnabled() Global
+    Return SkyrimNetApi.GetConfigBool(CFG(), "kinStageConfiscate", False)
+EndFunction
+
+Int Function TakeBabyItem(Int aiIdx) Global
+    { Removes FMR's baby armor from this child's mother and stops its clock.
+
+      1 - taken. 2 - there was never anything to take, stop asking.
+      0 - not knowable yet; ask again next sweep. }
+    _JSW_BB_Storage store = ResolveStorage()
+    If store == None
+        Return 2
+    EndIf
+
+    Int motherId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".motherId", 0)
+    If motherId == 0
+        ; NOT "nothing to take" - a tied birth records its mother later, and
+        ; answering 2 here would close the question before it was asked.
+        Return 0
+    EndIf
+    Actor mother = Game.GetFormEx(motherId) as Actor
+    If mother == None
+        Return 0
+    EndIf
+
+    ; ONE ARRAY, ONE CONVENTION. Every FMR call site indexes BabyAdded by
+    ; TrackedActors.Find - the player included - so the +1 on BabyAdded's
+    ; length is slack rather than a second convention to guess at. Getting this
+    ; wrong would zero a DIFFERENT mother's clock, which is why it was read out
+    ; of FMR's source instead of inferred from the array sizes.
+    Int mi = store.TrackedActors.Find(mother)
+    If mi < 0
+        ; FMR is not tracking her at all, so there is no timer to stop.
+        Return 2
+    EndIf
+    Float[] added = store.BabyAdded
+    If mi >= added.Length || added[mi] <= 0.0
+        ; NOT YET IS NOT THE SAME AS NEVER.
+        ;
+        ; The labour event fires as labour BEGINS - _JSW_BB_BirthEffect
+        ; dispatches it - while GiveBirth hands over the item afterwards. A
+        ; claimed birth therefore reaches this within the same sweep as the
+        ; event, before BabyAdded has been stamped, and answering "nothing to
+        ; take" there would close the question permanently one moment before
+        ; the answer arrived.
+        ;
+        ; A day of grace covers that gap with room to spare. Past it, a zero
+        ; genuinely means no item: Fertility Mode only stamps BabyAdded in its
+        ; baby-item birth mode, and on the soul-gem and do-nothing settings
+        ; there is no item in play for any birth at all.
+        Float born = JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".born", 0.0)
+        If born > 0.0 && (Utility.GetCurrentGameTime() - born) < 1.0
+            Return 0
+        EndIf
+        Return 2
+    EndIf
+
+    ; Papyrus arrays are references, so this writes through to FMR's storage
+    ; exactly as its own `Storage.BabyAdded[index] = 0.0` does.
+    Armor[] kinds = store.BirthBabyRace
+    Int n = kinds.Length
+    Int taken = 0
+    While n > 0
+        n -= 1
+        If kinds[n] != None
+            Int held = mother.GetItemCount(kinds[n])
+            If held > 0
+                ; Silent. A birth is not a pickpocketing, and the corner
+                ; message would fire for a mother on the far side of Skyrim.
+                mother.RemoveItem(kinds[n], held, True)
+                taken += held
+            EndIf
+        EndIf
+    EndWhile
+
+    ; CLEAR THE CLOCK EVEN IF THE ITEM WAS ALREADY GONE. Without this, the
+    ; BabyAdded > 0 gate keeps CheckBabyGrowth running every poll for this
+    ; mother forever - a full inventory scan plus a Debug.Trace on every pass,
+    ; and an FMR_BabyStatus event every game day advertising a baby that will
+    ; never grow. Clearing it is what FMR itself does once a baby resolves, and
+    ; CheckInactiveConditions only guards the mother while the baby is younger
+    ; than BabyDuration, so this changes nothing that day ten would not.
+    added[mi] = 0.0
+
+    Diag(LOG_WARN(), "Took Fertility Mode's baby item from " + \
+        mother.GetDisplayName() + " for " + \
+        JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+        ". This mod owns that childhood now, and FMR will not spawn the child " + \
+        "on its own timer. THIS CANNOT BE UNDONE.")
+    Return 2
+EndFunction
+
+Function CheckBabyItem(Int aiIdx, Int aiStage) Global
+    { Confiscates once per child, while the child is still small enough for
+      FMR's clock to matter. }
+    If !StagesEnabled() || !ConfiscateEnabled()
+        Return
+    EndIf
+    ; Nothing to take from a source that has no baby item, and nothing to
+    ; pre-empt in one that runs its own childhood correctly.
+    If SourceOwnsGrowth(ChildSource(aiIdx))
+        Return
+    EndIf
+    ; ONLY WHILE IT COULD STILL FIRE. Past infant the child is already older
+    ; than any BabyDuration worth setting, so there is nothing left to pre-empt
+    ; and no reason to keep looking.
+    If aiStage > 1
+        Return
+    EndIf
+    If JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".babyTaken", 0) != 0
+        Return
+    EndIf
+    Int outcome = TakeBabyItem(aiIdx)
+    If outcome != 0
+        JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".babyTaken", outcome)
+        JsonUtil.Save(StoreFile())
+    EndIf
+EndFunction
+
 Int Function StageForChild(Int aiIdx) Global
     ; The stage this child SHOULD be at, from its birth stamp.
     ;
@@ -2591,6 +4331,12 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
     ; Advances the stored stage if it has moved on, and publishes both keys.
     ; akKid may be None - a child with no actor still ages in the record.
     If !StagesEnabled()
+        ; STILL VISIT THE SIZE. Turning stages off must undo the size they
+        ; applied, and this early return is the path that runs when it happens -
+        ; skip it and every scaled child stays shrunk forever, changed by a
+        ; setting that is no longer on. ApplyStageScale reads one value and
+        ; returns immediately for a child it never touched.
+        ApplyStageScale(aiIdx, akKid, STAGE_ADULT())
         Return
     EndIf
     Int have = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".stage", -1)
@@ -2653,24 +4399,28 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
             ; actor at all get the same default: unknowable, and it matters
             ; least, because nothing renders a persona for them.
             Int planted = SkyrimNetApi.GetConfigInt(CFG(), "kinStageBackfill", 3)
-            ; A BOUND CHILD IS AN ADULT, and this is the strongest signal there
-            ; is - stronger than the body, because it does not need the actor
-            ; loaded to be true.
+            ; THE BODY FIRST WHEN IT CAN ANSWER, then the binding. Same order
+            ; and the same reasoning as the grown check further down - direct
+            ; evidence outranks a proxy, and a proxy that contradicts what the
+            ; player can see is simply wrong.
+            ;
+            ; The binding still matters, because IsChild reads the race off the
+            ; actor's 3D and an unloaded actor answers False - indistinguishable
+            ; from grown. So when there is no body to read:
             ;
             ; SpawnedChildActorRefs is declared "1:1 with AdultChildren indices"
-            ; and is written in exactly one place: SummonAdultChild, which takes
-            ; its base from Storage.AdultChildren. So an actor in that array is
-            ; a child who went away for training and came back grown. Kinship
-            ; only ever calls BindChildRef on actors from that array, so
-            ; SNKin_Bound == 1 means precisely "summoned adult".
-            ;
-            ; The body is the fallback, and only while it is LOADED: IsChild
-            ; reads the race off the actor's 3D, so an unloaded actor answers
-            ; False, which is indistinguishable from grown. Believing that would
-            ; age a child permanently for being out of the cell.
-            If akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1
-                planted = STAGE_ADULT()
-            ElseIf akKid != None && akKid.Is3DLoaded() && !akKid.IsChild()
+            ; and written in exactly one place, SummonAdultChild, which takes
+            ; its base from Storage.AdultChildren. An actor in that array is a
+            ; child who went away for training and came back grown - so
+            ; SNKin_Bound meant precisely "summoned adult", until this mod began
+            ; spawning children of its own. SNKin_OurSpawn separates the two.
+            If akKid != None && akKid.Is3DLoaded()
+                If !akKid.IsChild()
+                    planted = STAGE_ADULT()
+                EndIf
+            ElseIf akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1 \
+                    && StorageUtil.GetIntValue(akKid, "SNKin_OurSpawn", 0) != 1 \
+                    && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".ourSpawn", 0) != 1
                 planted = STAGE_ADULT()
             EndIf
             PlantStage(aiIdx, planted)
@@ -2697,12 +4447,23 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
     ; the engine cannot show; the body wins wherever it can.
     ; EVIDENCE BEATS THE CLOCK, in the order it can be trusted.
     Bool grown = False
-    If akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1
-        ; Summoned adult - see the plant branch. Holds whether loaded or not.
+    ; THE OWNING MOD'S VERDICT OUTRANKS EVERY OTHER SIGNAL. Beeing Female
+    ; stamps FW.Child.GrownUp when it swaps a child for an adult, and it is the
+    ; authority on a childhood it is running - our arithmetic is a guess about
+    ; a clock we do not control.
+    If akKid != None && SourceOwnsGrowth(ChildSource(aiIdx)) && \
+            StorageUtil.GetIntValue(akKid, "FW.Child.GrownUp", 0) == 1
         grown = True
+    ; THE BODY FIRST, WHENEVER IT CAN ANSWER. It is direct evidence; every flag
+    ; below it is a proxy, and a proxy that contradicts what the player is
+    ; looking at is simply wrong.
+    ;
+    ; This used to be the other way round, and the reordering is the fix for a
+    ; real failure: a manual stage correction would not stick. Setting a child
+    ; back from Adult in the panel wrote the record correctly, then the very
+    ; next sweep read SNKin_Bound, concluded "summoned adult", and planted them
+    ; at adult again - so the panel appeared to revert its own edit.
     ElseIf akKid != None && akKid.Is3DLoaded()
-        ; Body as fallback, and ONLY while it is loaded: an unloaded actor
-        ; answers IsChild False, which would age a child permanently.
         If !akKid.IsChild()
             grown = True
         ElseIf want < 2
@@ -2710,6 +4471,20 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
             ; child-bodied actor the child is at least a toddler.
             want = 2
         EndIf
+    ; ONLY WHEN THERE IS NO BODY TO READ. IsChild answers False for an unloaded
+    ; actor, which is indistinguishable from grown, so this is the fallback that
+    ; stops a child being aged permanently for standing in another cell.
+    ;
+    ; SNKin_Bound MEANT "summoned adult" ONLY WHILE FERTILITY MODE WAS THE ONLY
+    ; THING THAT COULD BIND ONE. That stopped being true the moment this mod
+    ; started spawning children itself - SpawnOwnedChild calls BindChildRef - so
+    ; SNKin_OurSpawn marks the ones WE placed. Bound and grown are no longer the
+    ; same question.
+    ElseIf akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1 \
+            && StorageUtil.GetIntValue(akKid, "SNKin_OurSpawn", 0) != 1 \
+            && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".ourSpawn", 0) != 1 \
+            && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".manualStage", 0) != 1
+        grown = True
     EndIf
     If grown
         want = STAGE_ADULT()
@@ -2721,6 +4496,20 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
             PlantStage(aiIdx, STAGE_ADULT())
         EndIf
     EndIf
+    ; A BODY AT THE FIRST STAGE THAT WARRANTS ONE.
+    ;
+    ; Only for a birth this mod CLAIMED - `owned` is absent on every record
+    ; that predates the feature, so nothing already on the roster suddenly
+    ; sprouts an actor. And only once: refId is set on success, spawnFailed on
+    ; an unsupported race, and either stops this retrying every sweep.
+    If want >= 2 && akKid == None \
+            && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".owned", 0) == 1 \
+            && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0) == 0 \
+            && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".spawnFailed", 0) == 0 \
+            && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".needsName", 0) == 0
+        akKid = SpawnOwnedChild(aiIdx)
+    EndIf
+
     If want != have
         JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".stage", want)
         JsonUtil.SetFloatValue(StoreFile(), "child." + aiIdx + ".stageAt", \
@@ -2734,9 +4523,24 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
                 " is now " + StageName(want) + " (was " + StageName(have) + ").")
         EndIf
     EndIf
+    ; NOT INSIDE THE akKid GUARD BELOW. The actor that matters here is the
+    ; MOTHER's, not the child's - a newborn has no actor by definition, so
+    ; gating this on one would mean never confiscating anything.
+    CheckBabyItem(aiIdx, want)
+
     If akKid != None
         StorageUtil.SetIntValue(akKid, "SNKin_ChildStage", want)
         StorageUtil.SetIntValue(akKid, "SNKin_ChildPlasticity", PlasticityFor(want))
+        ; AFTER the evidence has settled, never before. `want` at this point has
+        ; already been overridden by a bound adult or a loaded body, so a child
+        ; FMR summoned grown is sized as an adult rather than as whatever the
+        ; birth-stamp arithmetic would have claimed.
+        ;
+        ; The archetype collision that makes SpawnedChildActorRefs unreliable -
+        ; two children of one class, race and gender sharing ONE actor - cannot
+        ; bite here, because that array holds summoned ADULTS and every adult
+        ; resolves to 1.0. Two children sharing a reference would agree.
+        ApplyStageScale(aiIdx, akKid, want)
     EndIf
 EndFunction
 
@@ -3365,7 +5169,12 @@ Int Function SCHEMA() Global
       read supplies a default, and the first sweep backfills them from each
       child's birth stamp. MigrateStore falls through both of its branches for
       have == 3 and writes the new number, which is exactly right. }
-    Return 5
+    ; 5 -> 6 is ADDITIVE and needs no migration, for the same reason 3 -> 4 did
+    ; not. source, birthGroup, bfName, uuid, priorRefs and priorUuids are all
+    ; simply absent on an older store; every read supplies a default, and
+    ; ChildSource in particular defaults to Fertility Mode because every record
+    ; written before this existed came from that path.
+    Return 6
 EndFunction
 
 String Function ParentPath(Int aiFormID) Global

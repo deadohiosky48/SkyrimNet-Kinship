@@ -48,6 +48,66 @@ Function Say(String asText) Global
     Debug.Notification("[Kinship] " + asText)
 EndFunction
 
+String Function AskChildNameFromList(String asWord, String asMother, String[] asNames) Global
+    { Offers a list of names instead of a text field, the way Fertility Mode
+      does in its VR path.
+
+      FALLS BACK TO TYPING rather than failing. An empty pool means the names
+      file is missing or the race key found nothing, and being asked to type is
+      a far better outcome than a menu with no rows in it. }
+    If asNames == None || asNames.Length == 0
+        Return AskChildName(asWord, asMother)
+    EndIf
+    UILIB_1 provider = Lib()
+    If provider == None
+        Return ""
+    EndIf
+    String title = "Choose a name for your " + asWord
+    If asMother != ""
+        title = "Choose a name for " + asMother + "'s " + asWord
+    EndIf
+    Int pick = provider.ShowList(title, asNames, 0, 0)
+    If pick < 0 || pick >= asNames.Length
+        Return ""
+    EndIf
+    String chosen = asNames[pick]
+    ; SAME UNIQUENESS RULE AS TYPING. The roster is keyed by name, so a repeat
+    ; would be unfindable - and with a shared pool of 150 names a collision is
+    ; likely rather than exotic once a family gets large.
+    If JsonUtil.StringListFind(SNKin_Bridge.StoreFile(), "roster", chosen) >= 0
+        Say("There is already a " + chosen + " in the family - pick another.")
+        Return ""
+    EndIf
+    Return chosen
+EndFunction
+
+String Function AskChildName(String asWord, String asMother) Global
+    { Asks the player to name a newborn. "" when they decline or UILIB is
+      unavailable, which the caller treats as "generate one instead" rather
+      than as a reason to keep asking. }
+    UILIB_1 provider = Lib()
+    If provider == None
+        Return ""
+    EndIf
+    String title = "Name your " + asWord
+    If asMother != ""
+        title = "Name " + asMother + "'s " + asWord
+    EndIf
+    String given = provider.ShowTextInput(title, "")
+    If given == ""
+        Return ""
+    EndIf
+    ; A NAME THAT COLLIDES WITH AN EXISTING RECORD CANNOT BE USED, because the
+    ; roster is keyed by name and the second entry would be unfindable. Told
+    ; plainly rather than silently altered - the player picked that name and
+    ; deserves to know it did not take.
+    If JsonUtil.StringListFind(SNKin_Bridge.StoreFile(), "roster", given) >= 0
+        Say("There is already a " + given + " on the family roster - try another name.")
+        Return ""
+    EndIf
+    Return given
+EndFunction
+
 Int Function Pick(String asTitle, String[] asOptions) Global
     { One list prompt. Returns the chosen index, or -1 if cancelled.
 

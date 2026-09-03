@@ -29,6 +29,7 @@
 #   _JSW_BB_Storage.psc   Fertility Mode Reloaded
 #   UILIB_1.psc           SkyUILib, shipped with Fertility Mode Reloaded
 #   SKSEMenuFramework.h   SKSE Menu Framework
+#   SeverActionsNative.psc  SeverActions - for Native_GetHome/Native_SetHome only
 #
 # docs/BUILD_DLL.md tells a builder where to get each one. That is a slightly
 # worse first-build experience and a much better licensing position.
@@ -36,6 +37,7 @@
 /src/scripts/SkyrimNetApi.psc
 /src/scripts/_JSW_BB_Storage.psc
 /src/scripts/UILIB_1.psc
+/src/scripts/SeverActionsNative.psc
 /SKSE_Source/include/SKSEMenuFramework.h
 
 # Compiled Papyrus. Rebuilt by tools/build.ps1 from src/scripts, and shipped
@@ -53,3 +55,7 @@
 *.user
 Thumbs.db
 desktop.ini
+
+# A snapshot of one machine's live config, written by tools/settings.ps1.
+# Personal state, not shipped content.
+/tools/.settings-snapshot.txt

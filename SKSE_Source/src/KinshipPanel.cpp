@@ -231,6 +231,22 @@ namespace Kinship::Panel {
         int g_editIndex = -1;              // roster index being edited, -1 = none
         std::int32_t g_editMother = 0;
         std::int32_t g_editFather = 0;
+        int g_editStage = -1;
+        char g_editName[64] = "";   // the child's name, editable in the row
+        // Row index awaiting a second click before a body is spawned. -1 = none.
+        int g_spawnConfirm = -1;
+
+        // 0..5, matching SNKin_Bridge.StageName. Kept here rather than derived
+        // so the panel cannot drift out of step with the Papyrus names.
+        constexpr const char* kStageNames[] = {
+            "newborn", "infant", "toddler", "child", "adolescent", "adult"
+        };
+        const char* StageLabel(int aStage) {
+            if (aStage < 0 || aStage > 5) {
+                return "-";
+            }
+            return kStageNames[aStage];
+        }
         char g_motherHex[16] = "";
         char g_fatherHex[16] = "";
         char g_personFilter[96] = "";
@@ -336,6 +352,11 @@ namespace Kinship::Panel {
             if (g_editFather == 0) {
                 g_editFather = IdForName(aChild.fatherName);
             }
+            g_editStage = aChild.stage;
+            // Seeded with the current name, so an untouched Save dispatches
+            // nothing and the player edits rather than retypes.
+            std::strncpy(g_editName, aChild.name.c_str(), sizeof(g_editName) - 1);
+            g_editName[sizeof(g_editName) - 1] = '\0';
             g_motherHex[0] = '\0';
             g_fatherHex[0] = '\0';
             g_personFilter[0] = '\0';
@@ -359,6 +380,19 @@ namespace Kinship::Panel {
                     PapyrusBridge::SetParentById(aChild.name, g_editFather, 1);
                 }
             }
+            // ONLY ON A REAL CHANGE. Sending the current value back would still
+            // re-plant the stage and reset the aging stamp, quietly restarting
+            // the child's progress through a stage every time anyone opened the
+            // row and saved without touching it.
+            if (g_editStage != aChild.stage && g_editStage >= 0) {
+                PapyrusBridge::SetChildStage(aChild.name, g_editStage);
+            }
+            // LAST, because every call above addresses the child BY NAME. Rename
+            // first and those would be looking for a child that no longer exists
+            // under that name, and would silently do nothing.
+            if (g_editName[0] != '\0' && aChild.name != g_editName) {
+                PapyrusBridge::RenameChild(aChild.name, g_editName);
+            }
             g_editIndex = -1;
             NoteWrite();
         }
@@ -366,13 +400,14 @@ namespace Kinship::Panel {
         void DrawTable() {
             constexpr auto flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
-            if (!ImGui::BeginTable("kinship", 5, flags, ImVec2(0.0f, 420.0f))) {
+            if (!ImGui::BeginTable("kinship", 6, flags, ImVec2(0.0f, 420.0f))) {
                 return;
             }
             ImGui::TableSetupColumn("Child");
             ImGui::TableSetupColumn("Relation");
             ImGui::TableSetupColumn("Mother");
             ImGui::TableSetupColumn("Father");
+            ImGui::TableSetupColumn("Stage");
             ImGui::TableSetupColumn("Edit");
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
@@ -385,8 +420,16 @@ namespace Kinship::Panel {
                 ImGui::PushID(c.index);
                 ImGui::TableNextRow();
 
+                // THE ONE FIELD THAT HAD NO EDITOR until a child arrived that
+                // the naming prompt had missed - "(unnamed 11)", with mother,
+                // father and stage all correctable and the name not.
                 ImGui::TableNextColumn();
-                ImGui::Text("%s", c.name.c_str());
+                if (editing) {
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    ImGui::InputText("##name", g_editName, sizeof(g_editName));
+                } else {
+                    ImGui::Text("%s", c.name.c_str());
+                }
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(c.gender.empty() ? "-" : c.gender.c_str());
 
@@ -412,6 +455,31 @@ namespace Kinship::Panel {
                     ImGui::Text("%s", c.fatherName.c_str());
                 }
 
+                // LIFE STAGE. The setting text and the runtime warning both
+                // tell players to correct a stage here, which was a promise
+                // with nothing behind it until now: a backfilled child is a
+                // GUESS, because its recorded birth date is when this mod first
+                // saw it rather than when it was born.
+                ImGui::TableNextColumn();
+                if (editing && c.stage >= 0) {
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    if (ImGui::BeginCombo("##stage", StageLabel(g_editStage))) {
+                        for (int s = 0; s <= 5; ++s) {
+                            if (ImGui::Selectable(kStageNames[s], g_editStage == s)) {
+                                g_editStage = s;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                } else if (c.stage < 0) {
+                    // Not "newborn". Stages are off, or the sweep has not
+                    // reached this child - either way we do not know, and
+                    // guessing the youngest would be wrong for most of a roster.
+                    ImGui::TextDisabled("-");
+                } else {
+                    ImGui::TextUnformatted(StageLabel(c.stage));
+                }
+
                 ImGui::TableNextColumn();
                 if (editing) {
                     if (ImGui::SmallButton("Save")) {
@@ -421,8 +489,40 @@ namespace Kinship::Panel {
                     if (ImGui::SmallButton("Cancel")) {
                         g_editIndex = -1;   // discard; nothing was written
                     }
-                } else if (ImGui::SmallButton("Edit")) {
-                    BeginEdit(c);
+                } else {
+                    if (ImGui::SmallButton("Edit")) {
+                        BeginEdit(c);
+                    }
+                    // GIVE A BODY TO A CHILD THAT HAS NONE.
+                    //
+                    // Fertility Mode names a child and then waits for the player
+                    // to send it to training or adopt it. Do neither and it stays
+                    // a record forever - adoption is capped at two, and training
+                    // is a one-way trip to adulthood. Thirty-six children were in
+                    // that state on the save this was written for.
+                    //
+                    // Newborns and infants are excluded: they have no body in
+                    // this model at all, and the Papyrus side refuses them too.
+                    // stage < 0 means stages are off, and then there is no age to
+                    // object to.
+                    if (!c.hasBody && (c.stage < 0 || c.stage >= 2)) {
+                        ImGui::SameLine();
+                        if (g_spawnConfirm == c.index) {
+                            // TWO STEPS, because this puts an NPC into the world
+                            // and there is no undo button for that in this panel.
+                            if (ImGui::SmallButton("Really?")) {
+                                PapyrusBridge::SpawnChildBody(c.name);
+                                g_spawnConfirm = -1;
+                                NoteWrite();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("No")) {
+                                g_spawnConfirm = -1;
+                            }
+                        } else if (ImGui::SmallButton("Give a body")) {
+                            g_spawnConfirm = c.index;
+                        }
+                    }
                 }
                 ImGui::PopID();
             }

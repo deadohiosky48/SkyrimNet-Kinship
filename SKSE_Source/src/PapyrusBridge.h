@@ -42,6 +42,25 @@ namespace Kinship::PapyrusBridge {
     bool AddChild(const std::string& aChildName, std::int32_t aChildFormID,
                   std::int32_t aMotherFormID, std::int32_t aFatherFormID);
 
+    // Renames a child. Refused on the Papyrus side if the new name is already
+    // on the roster - which is keyed by name, so a duplicate would be
+    // unfindable and every later lookup would resolve to the first one.
+    bool RenameChild(const std::string& aOldName, const std::string& aNewName);
+
+    // Corrects a child's life stage. 0 newborn .. 5 adult.
+    //
+    // Plants rather than sets, on the Papyrus side: a bare write would be
+    // recomputed away by the aging clock on the very next sweep. See
+    // SetChildStageStatic for why the floor and the base stamp both move.
+    bool SetChildStage(const std::string& aChildName, std::int32_t aStage);
+
+    // Gives a recorded child an actor in the world.
+    //
+    // For children Fertility Mode named and then did nothing with - never sent
+    // to training, never adopted, so a record with no body and no way to get
+    // one. Refused for newborns and infants, which have no body by design.
+    bool SpawnChildBody(const std::string& aChildName);
+
     // True when the Papyrus VM is up and SNKin_Bridge is loaded. The panel
     // shows itself read-only rather than offering buttons that silently do
     // nothing.

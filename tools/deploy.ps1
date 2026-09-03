@@ -44,8 +44,50 @@ function Copy-Tree($from, $to, $label) {
 
 Write-Host "Deploying to $data`n"
 
+# SETTINGS ARE LIVE STATE, NOT SHIPPED CONTENT.
+#
+# The copy below is a blanket recursive -Force, which happily overwrites
+# settings.yaml with the repo's shipped defaults - silently reverting whatever
+# is actually configured. That is not hypothetical: a deploy turned life stages
+# and scaling back OFF mid-playthrough moments after they had been switched on,
+# and nothing in the output said so.
+#
+# But settings.yaml cannot simply be skipped either: a config key must exist in
+# BOTH manifest.yaml and settings.yaml to be readable at all, so a stale file
+# would make every newly added key silently return its Papyrus default forever.
+#
+# So: capture the live values first, copy (picking up new keys and updated
+# comments), then put the captured values back. New keys arrive at their shipped
+# default; existing ones keep whatever the player chose.
+$settingsRel = Join-Path 'SKSE\Plugins\SkyrimNet\config\plugins\SkyrimNet Kinship' 'settings.yaml'
+$liveSettings = Join-Path $data $settingsRel
+$utf8 = New-Object System.Text.UTF8Encoding $false
+$keep = @{}
+if (Test-Path $liveSettings) {
+    foreach ($line in [System.IO.File]::ReadAllLines($liveSettings, [System.Text.Encoding]::UTF8)) {
+        if ($line -match '^\s*(kin[A-Za-z0-9_]+)\s*:\s*(.+?)\s*$') { $keep[$Matches[1]] = $Matches[2] }
+    }
+}
+
 # Prompts, manifest and settings - all hot-reloadable.
 Copy-Tree (Join-Path $repo 'SKSE') (Join-Path $data 'SKSE') 'SKSE tree (prompt, manifest, settings)'
+
+if ($keep.Count -gt 0 -and (Test-Path $liveSettings)) {
+    $restored = 0
+    $out = foreach ($line in [System.IO.File]::ReadAllLines($liveSettings, [System.Text.Encoding]::UTF8)) {
+        if ($line -match '^\s*(kin[A-Za-z0-9_]+)\s*:\s*(.+?)\s*$' -and $keep.ContainsKey($Matches[1])) {
+            $key = $Matches[1]
+            if ($Matches[2] -ne $keep[$key]) { $restored++ }
+            "${key}: $($keep[$key])"
+        } else { $line }
+    }
+    [System.IO.File]::WriteAllLines($liveSettings, $out, $utf8)
+    if ($restored -gt 0) {
+        Write-Host "  ok    kept $restored live setting(s) that differ from the shipped defaults" -ForegroundColor Cyan
+    } else {
+        Write-Host "  ok    live settings preserved"
+    }
+}
 
 if (-not $PromptsOnly) {
     Copy-Tree (Join-Path $repo 'Scripts') (Join-Path $data 'Scripts') 'compiled scripts'

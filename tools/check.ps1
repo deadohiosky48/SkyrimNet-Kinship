@@ -110,6 +110,44 @@ foreach ($p in $paths) {
 }
 if (-not $collided) { Good "no function name collides with a config path" }
 
+# The registration decides WHICH event fires, and the two do not interchange:
+#
+#     RegisterForSingleUpdate(seconds)       -> OnUpdate()
+#     RegisterForSingleUpdateGameTime(hours) -> OnUpdateGameTime()
+#
+# Registering one and implementing the other raises no error, no warning, and
+# no event. This mod shipped that way from the start: it registered game-time
+# updates and implemented OnUpdate, so the hourly poll never fired ONCE. It
+# went unnoticed because Bootstrap also sweeps and Bootstrap runs on every game
+# load - which, during development, is every few minutes.
+Write-Host "`nUpdate registration"
+foreach ($f in Get-ChildItem $src -Filter 'SNKin_*.psc' -File) {
+    # COMMENTS ARE NOT CODE, and this check has to know the difference. Its own
+    # first run failed on the docstring above that EXPLAINS the trap, because
+    # that docstring names RegisterForSingleUpdate(seconds) as an example. A
+    # static check that reads prose reports on prose.
+    #
+    # Papyrus has ; to end of line and { } for docstrings. Strip both.
+    $body = Get-Content $f.FullName -Raw
+    $body = [regex]::Replace($body, '\{[^}]*\}', ' ', 'Singleline')
+    $body = [regex]::Replace($body, ';[^\r\n]*', ' ')
+    $wantsGame = $body -match 'RegisterForSingleUpdateGameTime\s*\('
+    $wantsReal = $body -match 'RegisterForSingleUpdate\s*\('
+    $hasGame   = $body -match '(?im)^\s*Event\s+OnUpdateGameTime\s*\('
+    $hasReal   = $body -match '(?im)^\s*Event\s+OnUpdate\s*\('
+    if ($wantsGame -and -not $hasGame) {
+        Bad "$($f.Name): registers RegisterForSingleUpdateGameTime but has no OnUpdateGameTime event - the poll will never fire"
+    } elseif ($wantsGame) {
+        Good "$($f.Name): OnUpdateGameTime present for its game-time registration"
+    }
+    if ($wantsReal -and -not $hasReal) {
+        Bad "$($f.Name): registers RegisterForSingleUpdate but has no OnUpdate event - the poll will never fire"
+    }
+    if ($hasReal -and -not $wantsReal) {
+        Bad "$($f.Name): implements OnUpdate but never registers a real-time update - dead code, or the game-time event was meant"
+    }
+}
+
 # --- 3. Prompt traps -------------------------------------------------------
 Write-Host "`nPrompts"
 foreach ($f in Get-ChildItem $promptDir -Filter '*.prompt' -Recurse -File) {

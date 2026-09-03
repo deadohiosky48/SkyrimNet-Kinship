@@ -170,6 +170,13 @@ namespace Kinship::Store {
             c.fatherId = Get<std::int32_t>(root, "int", key + "fatherId", 0);
             c.born = Get<float>(root, "float", key + "born", 0.0f);
             c.hidden = Get<int>(root, "int", key + "hidden", 0) != 0;
+            // -1 when life stages are switched off, or on a child the sweep has
+            // not reached yet. The panel shows "-" for that rather than
+            // guessing newborn, which would be wrong for most of the roster.
+            c.stage = Get<int>(root, "int", key + "stage", -1);
+            // A child Fertility Mode named and then did nothing with has a
+            // record and no body. The panel offers those one a way to exist.
+            c.hasBody = Get<std::int32_t>(root, "int", key + "refId", 0) != 0;
             c.candidateIds = GetIntList(root, key + "candidates");
             c.candidateNames = GetStringList(root, key + "candidateNames");
             if (c.hidden) {

@@ -32,6 +32,66 @@ kinStageInfantDays: 14.0
 kinStageToddlerDays: 30.0
 kinStageChildDays: 90.0
 kinStageAdolescentDays: 60.0
+# THIS DOES NOT SWITCH LIFE STAGES ON OR OFF. Stages, sizing, the bios and the
+# panel are all governed by kinStagesEnabled and work either way. What this
+# decides is WHO OWNS THE BIRTH.
+#
+# OFF: Fertility Mode matures and spawns the child at its own BabyDuration, and
+# this mod first sees it on the day it appears. The stage clock therefore starts
+# about ten days late, and newborn and infant are skipped - a walking child
+# already exists by then, and the body-beats-clock rule rightly refuses to call
+# it an infant.
+#
+# ON: the birth is recorded from FertilityModeLabor as it happens, the baby item
+# is taken, BabyAdded is cleared so FMR stops polling that mother, and this mod
+# picks the sex, asks for a name, and gives a body at TODDLER. Those first
+# seventeen days become a real period rather than a gap.
+#
+# PERMANENT, which is why it is a separate opt-in: turning it back off does not
+# hand the baby back, and FMR will not spawn a child it no longer has a timer
+# for.
+#
+# Verified against FMR's source, not assumed. CheckBabyGrowth gates the entire
+# spawn on `baby &&`, where `baby` is whichever BirthBabyRace armor is in the
+# inventory - no item, no spawn - and the EventLock it takes on entry is
+# released unconditionally, so exiting down that path cannot wedge FMR.
+#
+# FERTILITY MODE ONLY. Beeing Female runs its own childhood well, so this mod
+# stays out of it and consumes its stages instead.
+kinStageConfiscate: false
+# Naming. OFF = type a name; ON = pick from a list.
+#
+# Pools live in StorageUtilData/SNKin_Names.json, in PapyrusUtil's own format so
+# no JContainers is needed. Lookup is "<race>.<sex>" then plain "<sex>", so a
+# race with no list of its own still gets a full pool rather than an empty menu.
+#
+# The general pools are FMR's 301 names, copied rather than read: its file is
+# two flat top-level arrays that JsonUtil cannot see, and reading it would mean
+# depending on JContainers for one lookup. The per-race lists are ours - FMR
+# dropped race-specific keys, as its own source comments.
+kinNameFromList: false
+# Size. One child body serves every age in Skyrim, so toddler, child and
+# adolescent look identical - scale is the only way to separate them without
+# new assets, and it works here ONLY because the mesh being scaled is already a
+# child's. A shrunken adult reads as a dwarf; a shrunken child reads as younger.
+#
+# OFF by default, and separately from kinStagesEnabled on purpose: the
+# record layer is exact and this is a compromise. Animations assume a
+# default-sized skeleton, so a scaled child sits a little into a chair and
+# slides a little when walking.
+#
+# CHILD IS PINNED AT 1.0. Every artifact is proportional to the distance from
+# 1.0, and this is where most of a childhood is spent - so the busiest stage
+# pays nothing, and only the two neighbours deviate at all.
+#
+# Newborn, infant and adult are never scaled. The first two have no actor (FMR
+# carries a baby ITEM), and adult is the restore path - FMR can re-use the same
+# reference when it summons a grown child, and a scale left behind there would
+# be a permanently stunted adult.
+kinStageScaling: false
+kinScaleToddler: 0.82
+kinScaleChild: 1.00
+kinScaleAdolescent: 1.25
 # Left Shift + 9.
 #
 # 10 IS THE '9' KEY, NOT 9. DirectX scan codes for the digit row are offset by

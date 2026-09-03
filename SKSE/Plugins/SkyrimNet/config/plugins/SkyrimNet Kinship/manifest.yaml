@@ -1,7 +1,7 @@
 plugin:
   name: "SkyrimNet Kinship"
-  version: "1.4.0"
-  description: "Makes parentage from Fertility Mode Reloaded permanent and visible to SkyrimNet — a child knows who its parents are, and a mother never forgets the child she bore."
+  version: "1.5.0"
+  description: "Makes parentage permanent and visible to SkyrimNet — a child knows who its parents are, and a mother never forgets the child she bore. Works with Fertility Mode Reloaded, Fertility Mode v3 and Beeing Female NG."
   icon: "🍼"
 
 # NOTE: SkyrimNet plugin manifests DO NOT support dotted paths. Each dotted
@@ -94,6 +94,48 @@ schema:
       type: "string"
       description: "The stage to plant children who already existed when life stages were switched on. Their recorded birth date is when this mod first saw them, not when they were born, so computing a stage from it would call a grown child a newborn. 0 newborn, 1 infant, 2 toddler, 3 child, 4 adolescent, 5 adult. Correct individuals in the panel afterwards."
       defaultValue: "3"
+      category: "Life Stages"
+
+    - name: "Take Fertility Mode's Baby Item"
+      path: "kinStageConfiscate"
+      type: "bool"
+      description: "PERMANENT, AND OFF BY DEFAULT. This setting does NOT switch life stages on or off - it only decides who owns the birth. Life stages, sizing, the character bios and the panel all work whether this is on or off. On, this mod records the birth the moment labour happens, takes the baby item so Fertility Mode never matures the child on its own timer, chooses the child's sex, asks you to name them, and gives them a body when they reach toddler. Off, Fertility Mode matures and spawns the child at its own Baby Duration, and this mod first sees that child on the day it appears - so its stage clock starts about ten days late and the newborn and infant stages are skipped, because a walking child already exists by then. THIS CANNOT BE UNDONE for a birth already taken - turning it back off does not return the item, and Fertility Mode will not spawn a child it no longer has a timer for. Only applies to Fertility Mode; Beeing Female runs its own childhood and this mod stays out of it."
+      defaultValue: false
+      category: "Life Stages"
+
+    - name: "Pick Names From A List"
+      path: "kinNameFromList"
+      type: "bool"
+      description: "When this mod names a newborn, offer a list of names to choose from instead of a text field. Off by default, which asks you to type. The list is race-aware where a list exists for the mother's race and falls back to a general pool of 300 otherwise. Names live in Data/SKSE/Plugins/StorageUtilData/SNKin_Names.json and can be edited or extended freely - the general pools are seeded from Fertility Mode's own list, and the per-race lists are additions this mod ships. A name already used by one of your children is refused either way, because the family roster is keyed by name."
+      defaultValue: false
+      category: "Life Stages"
+
+    - name: "Size Children To Their Stage"
+      path: "kinStageScaling"
+      type: "bool"
+      description: "Scale a child's actor to match their life stage. Skyrim has one child body for every age, so a toddler and an adolescent are otherwise identical to look at - this is the only way to tell them apart without new assets. Scaling the child mesh works where scaling an adult would not, because its proportions are already a child's. Off by default, and separate from Life Stages so you can keep the record and drop the size. The cost is that animations assume a default-sized skeleton: a scaled child sits slightly into or above a chair and slides a little when walking. Both are proportional to the numbers below, and both are gone at 1.0."
+      defaultValue: false
+      category: "Life Stages"
+
+    - name: "Toddler Size"
+      path: "kinScaleToddler"
+      type: "string"
+      description: "Actor scale for a toddler, as a multiple of their normal size. Default 0.82. Clamped to 0.5 at the low end - much smaller and a child cannot path properly or use furniture at all."
+      defaultValue: "0.82"
+      category: "Life Stages"
+
+    - name: "Child Size"
+      path: "kinScaleChild"
+      type: "string"
+      description: "Actor scale for a child. Default 1.00, which means untouched. Pinned there deliberately: every artifact of scaling is proportional to the distance from 1.0, and this is the stage most of a childhood is spent in, so leaving it alone costs nothing and avoids the most artifacts."
+      defaultValue: "1.00"
+      category: "Life Stages"
+
+    - name: "Adolescent Size"
+      path: "kinScaleAdolescent"
+      type: "string"
+      description: "Actor scale for an adolescent. Default 1.25, which is close to a real adolescent against a child - roughly 122% - and lands near adult height on Fertility Mode's natively 0.8-scaled children. Clamped to 1.5 at the high end. Newborns, infants and adults are never scaled - the first two have no actor at all, and an adult is restored to full size so a child who grows up is not left stunted."
+      defaultValue: "1.25"
       category: "Life Stages"
 
     - name: "Assign Parent Hotkey"
