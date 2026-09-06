@@ -1,12 +1,24 @@
-# Live settings for SkyrimNet Kinship.
+# Reference defaults for SkyrimNet Kinship, with the reasoning behind each one.
 #
-# SHIPPED DELIBERATELY. A config key must exist in BOTH manifest.yaml AND this
-# file to be readable: SkyrimNet does not regenerate settings.yaml, so a key
-# that appears only in the manifest renders in the dashboard and then returns
-# its Papyrus default forever, whatever the dashboard shows.
+# NOT SHIPPED. tools/package.ps1 deletes this file from the archive, because it
+# is LIVE STATE: shipping it means every mod-manager update replaces the
+# player's configuration with these defaults. That happened - a Vortex update
+# turned life stages, sizing and confiscation all back off mid-playthrough.
+#
+# SkyrimNet GENERATES settings.yaml from manifest.yaml when it is missing and
+# then never overwrites it, so a key needs only to be in the manifest to reach
+# a player. This copy exists for local work: tools/deploy.ps1 copies it and then
+# restores whatever the live file already had, so new keys arrive at the default
+# below while existing ones keep the value in play.
 #
 # Keys must match the manifest paths exactly. Flat only - dotted paths collapse
 # to their last segment.
+#
+# A VALUE HERE IS ONLY HALF THE CONTRACT. The manifest's declared TYPE for each
+# key must also match how Papyrus reads it, or the dashboard shows the manifest
+# default instead of the stored value and the player's edit looks like it
+# reverted. Every numeric field here shipped as type "string" through 1.5.0 for
+# exactly that reason. tools/check.ps1 now asserts the alignment.
 kinEnabled: true
 # Matched to FMR's own PollingInterval, measured live at 1.0h on 2026-08-15.
 # Checking twice as often as FMR simulates cannot find anything sooner; it only

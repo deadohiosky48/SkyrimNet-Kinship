@@ -94,6 +94,93 @@ foreach ($f in Get-ChildItem $src -Filter 'SNKin_*.psc' -File) {
     if ($docBad -eq 0) { Good "$($f.Name): no braces inside docstrings" }
 }
 
+# The manifest's declared TYPE must match how Papyrus reads the key.
+#
+# A mismatch is silent in the worst possible way: the mod behaves correctly,
+# because GetConfigFloat coerces the YAML number happily - but the DASHBOARD
+# honours the declared type, refuses the stored value, and shows the manifest
+# default instead. The player edits a box, saves, comes back, and their value
+# has apparently reverted. It had not: it was on disk the whole time, being
+# displayed as the default and then written back over.
+#
+# Every numeric field in this mod shipped as type "string" for months for
+# exactly this reason. SkyrimNet supports "float" and "int" - its own core
+# plugin uses twelve and nine of them - and those are what a numeric field must
+# declare.
+Write-Host "`nManifest type vs Papyrus read"
+$declared = @{}
+foreach ($m in [regex]::Matches($manifest, '(?s)path:\s*"(kin[A-Za-z0-9_]+)".*?type:\s*"([a-z]+)"')) {
+    $declared[$m.Groups[1].Value] = $m.Groups[2].Value
+}
+$readAs = @{}
+foreach ($f in Get-ChildItem $src -Filter 'SNKin_*.psc' -File) {
+    $body = Get-Content $f.FullName -Raw
+    foreach ($m in [regex]::Matches($body, 'GetConfig(Bool|Int|Float|String)\(\s*CFG\(\)\s*,\s*"(kin[A-Za-z0-9_]+)"')) {
+        $readAs[$m.Groups[2].Value] = $m.Groups[1].Value.ToLower()
+    }
+}
+$mismatch = 0
+foreach ($k in ($readAs.Keys | Sort-Object)) {
+    $want = $readAs[$k]
+    $have = $declared[$k]
+    if (-not $have) {
+        Bad "$k is read from Papyrus but not declared in manifest.yaml"; $mismatch++
+    } elseif ($have -ne $want) {
+        Bad "$k : manifest says type `"$have`" but Papyrus reads it as $want - the dashboard will show the default and silently discard edits"
+        $mismatch++
+    }
+}
+if ($mismatch -eq 0) {
+    Good "all $($readAs.Count) config key(s) declare the type Papyrus reads"
+}
+
+# The manifest's defaultValue and the Papyrus fallback must be the SAME NUMBER.
+#
+# These are two independent statements of one default, and they drifted: the
+# hotkey read 70 in Papyrus while the manifest said 10 and BOTH files carried a
+# comment explaining that 70 is Scroll Lock, which NPC Renamer claims. Also
+# adrift were the modifier (0 vs 42), the poll interval (0.5 vs 1.0) and the
+# adolescent scale (1.12 vs 1.25).
+#
+# It went unnoticed for as long as settings.yaml was SHIPPED, because a value
+# present in that file means the Papyrus fallback is never reached. Version
+# 1.5.0 stopped shipping it - correctly, so a mod-manager update cannot reset a
+# player's config - and in doing so made every one of these fallbacks reachable
+# on a fresh install, for as long as it takes SkyrimNet to generate the file
+# from the manifest. The safety net became the live default.
+Write-Host "`nManifest default vs Papyrus fallback"
+$mfDefault = @{}
+foreach ($m in [regex]::Matches($manifest, '(?s)path:\s*"(kin[A-Za-z0-9_]+)".*?defaultValue:\s*([^\r\n]+)')) {
+    $mfDefault[$m.Groups[1].Value] = $m.Groups[2].Value.Trim()
+}
+$psFallback = @{}
+foreach ($f in Get-ChildItem $src -Filter 'SNKin_*.psc' -File) {
+    $body = Get-Content $f.FullName -Raw
+    foreach ($m in [regex]::Matches($body, 'GetConfig(?:Bool|Int|Float|String)\(\s*CFG\(\)\s*,\s*"(kin[A-Za-z0-9_]+)"\s*,\s*([^)]+)\)')) {
+        $psFallback[$m.Groups[1].Value] = $m.Groups[2].Value.Trim()
+    }
+}
+# Compare as VALUES, not as text: 1.0 and 1 are the same default, and Papyrus
+# writes True where YAML writes true.
+function Normalize($v) {
+    $v = $v.Trim()
+    if ($v -match '^(?i)(true|false)$') { return $v.ToLower() }
+    $d = 0.0
+    if ([double]::TryParse($v, [ref]$d)) { return $d.ToString('G17') }
+    return $v
+}
+$drift = 0
+foreach ($k in ($psFallback.Keys | Sort-Object)) {
+    if (-not $mfDefault.ContainsKey($k)) { continue }
+    $a = Normalize $mfDefault[$k]
+    $b = Normalize $psFallback[$k]
+    if ($a -ne $b) {
+        Bad "$k : manifest defaultValue is $($mfDefault[$k]) but the Papyrus fallback is $($psFallback[$k]) - a fresh install uses the Papyrus value until SkyrimNet writes settings.yaml"
+        $drift++
+    }
+}
+if ($drift -eq 0) { Good "all $($psFallback.Count) default(s) agree between manifest and Papyrus" }
+
 # A function must never share a name with a config path it reads - they
 # collide in the string table and the identifier wins. The "kin" prefix on
 # every path is what makes this structurally impossible; assert it holds.

@@ -75,7 +75,7 @@ EndFunction
 ; the config lookup would silently return its default forever. The prefix makes
 ; the collision structurally impossible rather than something to remember.
 Float Function PollHours() Global
-    Return SkyrimNetApi.GetConfigFloat(CFG(), "kinPollHours", 0.5)
+    Return SkyrimNetApi.GetConfigFloat(CFG(), "kinPollHours", 1.0)
 EndFunction
 
 Bool Function IsEnabled() Global
@@ -95,7 +95,10 @@ Bool Function Notify() Global
 EndFunction
 
 Int Function HotkeyCode() Global
-    { DirectX scan code for the parent-assignment menu. 70 is Scroll Lock.
+    { DirectX scan code for the parent-assignment menu. Default 10, which is
+      the '9' key - the digit row is offset by one in DirectX scan codes.
+      Deliberately NOT 70 (Scroll Lock): NPC Renamer claims it, and many
+      keyboards do not have the key at all.
 
       READ FROM SKYRIMNET'S OWN CONFIG, NOT MCM HELPER - which means this mod
       takes no UI dependency at all.
@@ -111,13 +114,14 @@ Int Function HotkeyCode() Global
       setting in the SkyrimNet dashboard - which this mod already depends on
       and which the player already has open - removes a dependency instead of
       adding one. 0 disables the hotkey. }
-    Return SkyrimNetApi.GetConfigInt(CFG(), "kinHotkey", 70)
+    Return SkyrimNetApi.GetConfigInt(CFG(), "kinHotkey", 10)
 EndFunction
 
 Int Function HotkeyModifier() Global
-    { Optional held modifier, Dynamic-Activation-Key style. 0 = none.
+    { Optional held modifier, Dynamic-Activation-Key style. Default 42, giving
+      Left Shift + 9. 0 = none.
       42 Left Shift, 29 Left Ctrl, 56 Left Alt. }
-    Return SkyrimNetApi.GetConfigInt(CFG(), "kinHotkeyModifier", 0)
+    Return SkyrimNetApi.GetConfigInt(CFG(), "kinHotkeyModifier", 42)
 EndFunction
 
 ; ===========================================================================
@@ -3998,7 +4002,7 @@ Float Function ScaleForStage(Int aiStage) Global
     ElseIf aiStage == 3
         Return SkyrimNetApi.GetConfigFloat(CFG(), "kinScaleChild", 1.0)
     ElseIf aiStage == 4
-        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinScaleAdolescent", 1.12)
+        Return SkyrimNetApi.GetConfigFloat(CFG(), "kinScaleAdolescent", 1.25)
     EndIf
     Return 1.0
 EndFunction
