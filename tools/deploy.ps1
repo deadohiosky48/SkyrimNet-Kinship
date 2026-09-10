@@ -3,11 +3,27 @@
 
     DEPLOY CADENCE - this drives the whole iteration loop:
 
-      .prompt files        nothing, hot-reload (or "Reload prompts" in the UI)
+      .prompt files        top-level ones hot-reload ("Reload prompts" in the UI)
+      submodule .prompt    FULL GAME RESTART. Measured: 0340_kinship.prompt was
+                           deployed at 10:34 and a conversation at 11:18, after
+                           a "Reload prompts", still rendered the OLD text -
+                           confirmed by grepping the rendered request in
+                           logs/openrouter_input.log for a phrase unique to the
+                           new version. Either the reload skips submodules/ or
+                           the composed character bio is cached per actor.
+                           ALWAYS verify a prompt edit by grepping the input log
+                           for new wording before judging whether it worked; a
+                           stale render looks exactly like an instruction the
+                           model ignored, and one round of prompt tuning was
+                           spent on that mistake.
       trigger/action YAML  reload from disk in the SkyrimNet UI, no restart
       .pex scripts         FULL GAME RESTART - a save reload reuses cached
                            scripts and will run the OLD code while showing you
                            the new file on disk
+      SKSE panel DLL       FULL GAME RESTART - loaded once at startup. A stale
+                           one loads happily and simply lacks the new UI, which
+                           looks like a change that did not work rather than one
+                           that was never installed
 
     DO NOT run this while Skyrim is running if -Scripts is included: the game
     holds .pex open and a half-written script is worse than a stale one. The
@@ -91,6 +107,40 @@ if ($keep.Count -gt 0 -and (Test-Path $liveSettings)) {
 
 if (-not $PromptsOnly) {
     Copy-Tree (Join-Path $repo 'Scripts') (Join-Path $data 'Scripts') 'compiled scripts'
+
+    # THE PANEL DLL, which this script did not copy for the whole of its life.
+    #
+    # package.ps1 takes the DLL straight from build\Release, so a RELEASE always
+    # carried the current panel - but deploying never did. Every panel change
+    # had to be hand-copied, and the failure is silent in the worst way: the
+    # game loads a stale DLL perfectly happily and the new UI is simply absent,
+    # which reads as "the change did not work" rather than "the change was not
+    # installed". A tooltip built and verified in one session was still missing
+    # in-game a day later for exactly this reason.
+    #
+    # Absent is normal and not an error: the DLL is optional, and a Papyrus-only
+    # working copy has never built one.
+    $dll = Join-Path $repo 'SKSE_Source\build\Release\SkyrimNetKinship.dll'
+    if (Test-Path $dll) {
+        $dllDest = Join-Path $data 'SKSE\Plugins\SkyrimNetKinship.dll'
+        # IN PLACE, DELIBERATELY. The live file is a Vortex HARDLINK into the
+        # staging folder; Copy-Item -Force overwrites the contents and keeps the
+        # link, where Remove-Item then copy would break it and leave Vortex
+        # believing it still manages a file it no longer shares.
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dllDest) | Out-Null
+        Copy-Item $dll $dllDest -Force
+        $kb = [math]::Round((Get-Item $dllDest).Length / 1KB)
+        if ((Get-FileHash $dll).Hash -eq (Get-FileHash $dllDest).Hash) {
+            Write-Host "  ok    SKSE panel DLL ($kb KB)"
+        } else {
+            # Only reachable if something else holds the file. Worth saying
+            # loudly rather than reporting a copy that did not land.
+            Write-Host "  FAIL  SKSE panel DLL did not land - is the file locked?" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "  skip  SKSE panel DLL (not built - run tools\build-dll.ps1)"
+    }
+
     Write-Host "`n  NOTE: scripts changed - a FULL GAME RESTART is required." -ForegroundColor Yellow
     Write-Host "        Reloading a save reuses cached scripts and runs the old code." -ForegroundColor Yellow
 }

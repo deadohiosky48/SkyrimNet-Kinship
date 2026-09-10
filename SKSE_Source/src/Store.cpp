@@ -176,7 +176,15 @@ namespace Kinship::Store {
             c.stage = Get<int>(root, "int", key + "stage", -1);
             // A child Fertility Mode named and then did nothing with has a
             // record and no body. The panel offers those one a way to exist.
-            c.hasBody = Get<std::int32_t>(root, "int", key + "refId", 0) != 0;
+            c.refId = Get<std::int32_t>(root, "int", key + "refId", 0);
+            c.hasBody = c.refId != 0;
+            // Either half makes this mod responsible: `owned` is a birth it
+            // claimed at labour, and babyTaken == 1 is one whose Fertility Mode
+            // clock it stopped. babyTaken == 2 is "there was nothing to take"
+            // and is NOT ownership - most of a mature roster carries a 2.
+            c.owned = Get<std::int32_t>(root, "int", key + "owned", 0) == 1 ||
+                      Get<std::int32_t>(root, "int", key + "babyTaken", 0) == 1;
+            c.home = Get<std::string>(root, "string", key + "home", "");
             c.candidateIds = GetIntList(root, key + "candidates");
             c.candidateNames = GetStringList(root, key + "candidateNames");
             if (c.hidden) {

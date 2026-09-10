@@ -1,6 +1,7 @@
 #include "KinshipPanel.h"
 
 #include "PCH.h"
+#include "Diagnostics.h"
 #include "PapyrusBridge.h"
 #include "Store.h"
 
@@ -235,6 +236,10 @@ namespace Kinship::Panel {
         char g_editName[64] = "";   // the child's name, editable in the row
         // Row index awaiting a second click before a body is spawned. -1 = none.
         int g_spawnConfirm = -1;
+        // Two-step guard for the bulk move. Separate from g_spawnConfirm, which
+        // is per-row and holds a child index rather than a flag.
+        bool g_sendAllConfirm = false;
+        std::string g_diagResult;
 
         // 0..5, matching SNKin_Bridge.StageName. Kept here rather than derived
         // so the panel cannot drift out of step with the Papyrus names.
@@ -400,7 +405,7 @@ namespace Kinship::Panel {
         void DrawTable() {
             constexpr auto flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
-            if (!ImGui::BeginTable("kinship", 6, flags, ImVec2(0.0f, 420.0f))) {
+            if (!ImGui::BeginTable("kinship", 7, flags, ImVec2(0.0f, 420.0f))) {
                 return;
             }
             ImGui::TableSetupColumn("Child");
@@ -408,6 +413,7 @@ namespace Kinship::Panel {
             ImGui::TableSetupColumn("Mother");
             ImGui::TableSetupColumn("Father");
             ImGui::TableSetupColumn("Stage");
+            ImGui::TableSetupColumn("Home");
             ImGui::TableSetupColumn("Edit");
             ImGui::TableSetupScrollFreeze(0, 1);
             ImGui::TableHeadersRow();
@@ -480,6 +486,42 @@ namespace Kinship::Panel {
                     ImGui::TextUnformatted(StageLabel(c.stage));
                 }
 
+                // WHERE THEY LIVE, AND LOUDLY WHEN THEY DO NOT.
+                //
+                // A child with no home is the case worth surfacing: "Send home"
+                // silently declines for those, and without a column saying so
+                // the button simply appears not to work. It happened on the live
+                // save - one child whose mother had no home recorded either, and
+                // nothing on screen explained why she stayed put.
+                //
+                // Read-only. The home belongs to SeverActions; this is a view of
+                // it, copied into the store by the Papyrus side because the panel
+                // cannot reach the co-save.
+                ImGui::TableNextColumn();
+                if (!c.hasBody) {
+                    // No actor means nothing to ask about - not the same as
+                    // having no home, and worth distinguishing.
+                    ImGui::TextDisabled("-");
+                } else if (c.home.empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.35f, 1.0f));
+                    ImGui::TextUnformatted("none");
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                        ImGui::TextUnformatted(
+                            "No home is recorded for this child, so \"Send home\" has "
+                            "nowhere to send them.\n\n"
+                            "They inherit their mother's when she has one. If she has "
+                            "none either, give her a home in SeverActions and press "
+                            "\"Send home\" again.");
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
+                } else {
+                    ImGui::TextUnformatted(c.home.c_str());
+                }
+
                 ImGui::TableNextColumn();
                 if (editing) {
                     if (ImGui::SmallButton("Save")) {
@@ -505,6 +547,100 @@ namespace Kinship::Panel {
                     // this model at all, and the Papyrus side refuses them too.
                     // stage < 0 means stages are off, and then there is no age to
                     // object to.
+                    // BRING A CHILD THAT HAS A BODY TO THE PLAYER.
+                    //
+                    // The exact complement of the button below: that one exists
+                    // because a child has no actor, this one because it has one
+                    // and nobody knows where. A child is placed beside its
+                    // mother or wherever the player stood, and then it is simply
+                    // gone - not findable in the SkyrimNet UI either, because a
+                    // spawned child is registered under Fertility Mode's base
+                    // actor name until a character record is authored for it,
+                    // and authoring one requires the actor in the crosshair.
+                    //
+                    // No confirmation step. Moving an existing reference is
+                    // reversible by walking away, unlike placing a new NPC.
+                    if (c.hasBody) {
+                        ImGui::SameLine();
+                        // EACH TOOLTIP IMMEDIATELY AFTER ITS OWN BUTTON.
+                        //
+                        // IsItemHovered reads the LAST SUBMITTED item, so a
+                        // tooltip written further down does not belong to the
+                        // button it was written for. Adding "Send home" between
+                        // Summon and Summon's tooltip silently gave "Send home"
+                        // BOTH tooltips and Summon none - the same trap caught
+                        // once already on the "Give a body" button, and it is
+                        // invisible in the source unless the order is read as
+                        // strictly sequential, which is what ImGui is.
+                        if (ImGui::SmallButton("Summon")) {
+                            PapyrusBridge::SummonChild(c.name);
+                            NoteWrite();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::BeginTooltip();
+                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                            ImGui::TextUnformatted(
+                                "Bring this child to you. Moves the actor that already "
+                                "exists - it never creates a second one, which is what "
+                                "the console's PlaceAtMe would do.\n\n"
+                                "Use this to get a child in front of you so SkyrimNet's "
+                                "bio hotkey can author their character record. Until that "
+                                "happens they are registered under Fertility Mode's "
+                                "generic child name rather than their own.");
+                            ImGui::PopTextWrapPos();
+                            ImGui::EndTooltip();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Send home")) {
+                            PapyrusBridge::SendChildHome(c.name);
+                            NoteWrite();
+                        }
+                        // EXPERIMENT, and labelled as one. Only offered where it
+                        // can actually be answered: Variable07 can name eight
+                        // player houses and nothing else, so a child living in
+                        // the Blue Palace has no integer and the button would
+                        // only ever report that.
+                        if (!c.home.empty()) {
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Var07?")) {
+                                PapyrusBridge::TryHomePackage(c.name);
+                                NoteWrite();
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::BeginTooltip();
+                                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+                                ImGui::TextUnformatted(
+                                    "Test: tell this child's own AI package where they "
+                                    "live, then ask the package to move them.\n\n"
+                                    "These actors are built from Fertility Mode's child "
+                                    "bases, which carry the vanilla child AI. That AI "
+                                    "reads a house number from Variable07, and with none "
+                                    "set it falls back to one marker shared by every "
+                                    "child - which is what drags them back after a long "
+                                    "sleep.\n\n"
+                                    "Watch the log. If they end up inside the house named "
+                                    "in the Home column, the package reads it and that is "
+                                    "the fix. If they end up anywhere else, it does not, "
+                                    "and we need our own package.\n\n"
+                                    "Only works for the eight Hearthfire player homes.");
+                                ImGui::PopTextWrapPos();
+                                ImGui::EndTooltip();
+                            }
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::BeginTooltip();
+                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                            ImGui::TextUnformatted(
+                                "Move this child to the home they are already recorded "
+                                "as living in - inheriting their mother's if they have "
+                                "none yet.\n\n"
+                                "A child is placed wherever you were standing when it "
+                                "got a body, and nothing has ever moved it since. This "
+                                "puts it where it belongs without escorting it there.");
+                            ImGui::PopTextWrapPos();
+                            ImGui::EndTooltip();
+                        }
+                    }
                     if (!c.hasBody && (c.stage < 0 || c.stage >= 2)) {
                         ImGui::SameLine();
                         if (g_spawnConfirm == c.index) {
@@ -519,8 +655,52 @@ namespace Kinship::Panel {
                             if (ImGui::SmallButton("No")) {
                                 g_spawnConfirm = -1;
                             }
-                        } else if (ImGui::SmallButton("Give a body")) {
-                            g_spawnConfirm = c.index;
+                        } else {
+                            if (ImGui::SmallButton("Give a body")) {
+                                g_spawnConfirm = c.index;
+                            }
+                            // SAY WHY THE BUTTON IS HERE.
+                            //
+                            // Without this the button reads as a defect - a child
+                            // is old enough to walk around and the panel is
+                            // offering to fix something, with no indication of
+                            // what went wrong or whether anything did. Usually
+                            // nothing did: Fertility Mode simply never spawns a
+                            // child it has named, and that is the expected state
+                            // for most of a roster.
+                            //
+                            // The two cases need different answers, which is why
+                            // Store carries `owned` at all.
+                            //
+                            // INSIDE this branch, not after the chain. IsItemHovered
+                            // reads the LAST SUBMITTED item, so left below the
+                            // if/else it would describe the "No" button whenever a
+                            // confirmation was open.
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::BeginTooltip();
+                                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                                if (c.owned) {
+                                    ImGui::TextUnformatted(
+                                        "This mod is running this childhood and gives this "
+                                        "child a body by itself once it reaches toddler. "
+                                        "Nothing is wrong; the button is here if you would "
+                                        "rather not wait.");
+                                } else {
+                                    ImGui::TextUnformatted(
+                                        "Nothing has gone wrong. Fertility Mode names a child "
+                                        "and then waits for you to adopt it or send it to "
+                                        "training. Adoption is capped at two and training goes "
+                                        "straight to adulthood, so a child you do neither with "
+                                        "stays a record with no actor - which is what this one "
+                                        "is.\n\n"
+                                        "This mod only places a body automatically for births "
+                                        "it took over itself, so that switching life stages on "
+                                        "does not put a crowd of children into the world at "
+                                        "once. For everyone else, this button is the way.");
+                                }
+                                ImGui::PopTextWrapPos();
+                                ImGui::EndTooltip();
+                            }
                         }
                     }
                 }
@@ -567,6 +747,56 @@ namespace Kinship::Panel {
         ImGui::SameLine();
         if (ImGui::Button("Refresh")) {
             Store::Reload();
+        }
+        // DIAGNOSTIC. Asks the engine which AI package is actually running on
+        // every child that has a body, and writes it to SkyrimNetKinship.log.
+        // Five theories about what keeps dragging them to Whiterun were tested
+        // from the outside and all five were wrong; this stops guessing.
+        //
+        // Comes out before release along with the displacement watcher.
+        ImGui::SameLine();
+        if (ImGui::Button("Diagnose")) {
+            g_diagResult = Diagnostics::DumpPackages();
+        }
+        if (!g_diagResult.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", g_diagResult.c_str());
+        }
+        // SEND EVERYONE HOME AT ONCE.
+        //
+        // Children placed before homes were being assigned are standing
+        // wherever the player happened to be at the time - on the save this was
+        // written against, a crowd of them in the middle of Whiterun. Doing it
+        // one at a time is twenty-five button presses; escorting each as a
+        // follower is twenty-five journeys.
+        //
+        // Confirmed, because it moves every child in the world at once and
+        // there is no undo - though each of them can be Summoned straight back.
+        ImGui::SameLine();
+        if (g_sendAllConfirm) {
+            if (ImGui::Button("Really? Move everyone")) {
+                PapyrusBridge::SendAllChildrenHome();
+                g_sendAllConfirm = false;
+                NoteWrite();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("No")) {
+                g_sendAllConfirm = false;
+            }
+        } else if (ImGui::Button("Send all home")) {
+            g_sendAllConfirm = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+            ImGui::TextUnformatted(
+                "Move every child that has a body to the home they are recorded "
+                "as living in, inheriting their mother's where they have none.\n\n"
+                "Children with no home on either side are left alone and named "
+                "in the log. Where the interior cannot be resolved a child is "
+                "left at the front door instead.");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
         }
 
         DrawAddChild();

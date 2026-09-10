@@ -176,8 +176,11 @@ Function Bootstrap(Bool abForce = False)
 
     ; Arm the watch loop. A single-update registration replaces any prior one
     ; rather than stacking, so this is safe on every bootstrap.
+    ; One-time migration: see RetryFailedSpawnsOnce.
+    RetryFailedSpawnsOnce()
     RegisterForSingleUpdateGameTime(PollHours())
     Diag(LOG_INFO(), "Bridge ready. FMR storage resolved. Watch armed (" + PollHours() + "h).")
+
 
     ; EVERY LOAD, not just the first run. This was inside the one-shot seed
     ; pass and that was wrong: a mother already carrying the player's baby when
@@ -3261,16 +3264,15 @@ Bool Function OwnsFmrBirth() Global
     Return HasFmr() && StagesEnabled() && ConfiscateEnabled()
 EndFunction
 
-Int Function FmrRaceIndex(_JSW_BB_Storage akStore, Actor akMother) Global
-    { The mother's row in Fertility Mode's parallel race arrays.
+Int Function RaceRowFor(_JSW_BB_Storage akStore, Actor akWho) Global
+    { One actor's row in Fertility Mode's parallel race arrays, or -1.
 
-      BirthMotherRace, BirthChildRace, BirthBabyRace and Children are all
-      indexed the same way, so one lookup serves for the child's race and its
-      actor base. Vampire mothers live in a second array of the same order. }
-    If akStore == None || akMother == None
+      Vampires live in a second array of the same order, so a hit in either
+      yields the same index. }
+    If akStore == None || akWho == None
         Return -1
     EndIf
-    Race r = akMother.GetRace()
+    Race r = akWho.GetRace()
     If r == None
         Return -1
     EndIf
@@ -3285,7 +3287,77 @@ Int Function FmrRaceIndex(_JSW_BB_Storage akStore, Actor akMother) Global
             hit = vamp.Find(r)
         EndIf
     EndIf
+    If hit >= 0
+        Return hit
+    EndIf
+    ; A VAMPIRE RACE IS BUILT ON A MORTAL ONE, so ask what it was built on.
+    ;
+    ; Fertility Mode carries a vampire array parallel to its mortal one, which
+    ; covers the vanilla vampire races - but not a modded one, and Sybille
+    ; Stentor is exactly that: her race is in neither array, so her son had no
+    ; body until the father's race was consulted.
+    ;
+    ; The RACE record's armor parent is the honest link. It exists so a vampire
+    ; can wear the armour of whatever they were turned from, so essentially
+    ; every vampire race points at its base - including modded ones, which is
+    ; the case the parallel array cannot cover. Matching "Vampire" in a name
+    ; would be the alternative and it would be guesswork.
+    ;
+    ; Needs the DLL. Without it GetParentRace returns None, this adds nothing,
+    ; and the mother-father-player chain still applies.
+    Race parent = SNKin_Native.GetParentRace(r)
+    If parent != None && parent != r
+        If normal != None
+            hit = normal.Find(parent)
+        EndIf
+        If hit >= 0
+            Diag(LOG_DEBUG(), akWho.GetDisplayName() + "'s race is unknown to " + \
+                "Fertility Mode, but it is built on one that is not.")
+        EndIf
+    EndIf
     Return hit
+EndFunction
+
+Int Function FmrRaceIndex(_JSW_BB_Storage akStore, Actor akMother, Actor akFather = None) Global
+    { The row to build this child's body from - the mother's if Fertility Mode
+      knows her race, otherwise the father's, otherwise the player's.
+
+      A CHILD WITH AN UNRECOGNISED MOTHER USED TO GET NOTHING AT ALL. Yannick
+      is the case: his mother is Sybille Stentor, whose race is in neither of
+      Fertility Mode's arrays, so the lookup returned -1, spawnFailed was set,
+      and a child this mod had claimed at labour and named was left permanently
+      bodiless. The record was fine; there was simply no base to build from.
+
+      Falling back to the father is not a cosmetic compromise - half the child's
+      parentage is his, and Fertility Mode itself keeps a father race array for
+      exactly this reason. The player is the last resort because on the ordinary
+      playthrough he IS the father, so it is usually the same answer arrived at
+      by a longer road.
+
+      NEVER SILENT. Whichever parent supplied the race is logged, because a
+      child who does not look like their mother is something a player will
+      notice and should be able to explain. }
+    Int hit = RaceRowFor(akStore, akMother)
+    If hit >= 0
+        Return hit
+    EndIf
+    String who = "?"
+    If akMother != None
+        who = akMother.GetDisplayName()
+    EndIf
+    hit = RaceRowFor(akStore, akFather)
+    If hit >= 0
+        Diag(LOG_WARN(), "Fertility Mode does not recognise " + who + "'s race, " + \
+            "so the child's body is built from the father's instead.")
+        Return hit
+    EndIf
+    hit = RaceRowFor(akStore, Game.GetPlayer())
+    If hit >= 0
+        Diag(LOG_WARN(), "Neither parent's race is one Fertility Mode knows for " + \
+            who + "'s child, so the body is built from the player's.")
+        Return hit
+    EndIf
+    Return -1
 EndFunction
 
 Function ClaimFmrBirth(Actor akMother, String asFather, Int aiFatherId) Global
@@ -3634,6 +3706,35 @@ String Function RaceKey(Actor akWho) Global
     Return ToLower(out)
 EndFunction
 
+String Function TitleCase(String asText) Global
+    { Capitalises the first letter of each word. "proudspire manor" becomes
+      "Proudspire Manor".
+
+      NOT a general-purpose title caser - it does not know that "of" and "the"
+      stay lowercase in "Temple of Kynareth". That is deliberate: this exists
+      only to hand a second candidate to a lookup that has already failed once,
+      so a slightly wrong capitalisation costs nothing and a missing one costs
+      a child their home. }
+    String upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    String lower = "abcdefghijklmnopqrstuvwxyz"
+    String out = ""
+    Bool atStart = True
+    Int i = 0
+    While i < StringUtil.GetLength(asText)
+        String c = StringUtil.GetNthChar(asText, i)
+        If atStart
+            Int at = StringUtil.Find(lower, c)
+            If at >= 0
+                c = StringUtil.GetNthChar(upper, at)
+            EndIf
+        EndIf
+        atStart = (c == " ")
+        out += c
+        i += 1
+    EndWhile
+    Return out
+EndFunction
+
 String Function ToLower(String asText) Global
     { Papyrus has no case conversion. Walks the string against a pair of
       alphabets, which is ugly and completely adequate for a race name. }
@@ -3762,6 +3863,12 @@ Int Function ChildSex(Int aiIdx) Global
     Return 0
 EndFunction
 
+Bool Function HasSeverActions() Global
+    { SeverActions present, in either plugin form. }
+    Return Game.GetModByName("severactions.esp") != 255 || \
+           Game.GetLightModByName("severactions.esp") != 255
+EndFunction
+
 Function InheritHome(Actor akChild, Actor akMother) Global
     { Gives a newly embodied child its mother's home.
 
@@ -3778,14 +3885,35 @@ Function InheritHome(Actor akChild, Actor akMother) Global
     If akChild == None || akMother == None
         Return
     EndIf
-    If Game.GetModByName("severactions.esp") == 255 && \
-       Game.GetLightModByName("severactions.esp") == 255
+    If !HasSeverActions()
         Return
     EndIf
     String where = SeverActionsNative.Native_GetHome(akMother)
     If where == ""
-        ; She has no home recorded either. Nothing to inherit, and inventing
-        ; one would put the child somewhere its mother is not.
+        ; FALL BACK TO WHERE SHE ACTUALLY LIVES.
+        ;
+        ; Native_GetHome is the home SeverActions has ASSIGNED, and a mother it
+        ; has never relocated has none at all - which is most of Skyrim.
+        ; GetActorHomeCellName answers the other question, "which cell does this
+        ; actor's base belong to", and for exactly those mothers it is right:
+        ; Gerdur has no assigned home and lives, unambiguously, in Hod and
+        ; Gerdur's House.
+        ;
+        ; THE ORDER MATTERS AND ONLY THIS ORDER IS SAFE. The ownership answer is
+        ; WRONG for twenty-nine of thirty-one mothers on the live save, because
+        ; SeverActions has moved them to player homes and ownership still points
+        ; at Dragonsreach or the Silver-Blood Inn. But every one of those has an
+        ; assigned home to prefer, so this branch never sees them. It is reached
+        ; only when there is nothing to conflict with.
+        where = SeverActionsNative.GetActorHomeCellName(akMother)
+        If where != ""
+            Diag(LOG_DEBUG(), akMother.GetDisplayName() + " has no assigned home; " + \
+                "using where she actually lives: " + where + ".")
+        EndIf
+    EndIf
+    If where == ""
+        ; Nothing on either route. Inventing one would put the child somewhere
+        ; its mother is not.
         Diag(LOG_DEBUG(), akMother.GetDisplayName() + " has no home recorded, so " + \
             akChild.GetDisplayName() + " inherits none.")
         Return
@@ -3793,6 +3921,837 @@ Function InheritHome(Actor akChild, Actor akMother) Global
     SeverActionsNative.Native_SetHome(akChild, where)
     Diag(LOG_INFO(), akChild.GetDisplayName() + " now lives where " + \
         akMother.GetDisplayName() + " does: " + where + ".")
+EndFunction
+
+ObjectReference Function HomeMarkerFor(Actor akWho, String asHome) Global
+    { Somewhere inside asHome that an actor can stand, or None.
+
+      THE CHAIN, IN THE ORDER MEASURED RATHER THAN ASSUMED. A home is stored by
+      SeverActions as a NAME - "Breezehome" - and a name is not a place. Two
+      calls turn it into one:
+
+        ResolveDestination(actor, name)   -> usually the exterior DOOR
+        FindInteriorMarkerForDoor(door)   -> a marker on the inside
+
+      Measured across thirty-four mothers on the live save: every time the
+      second call answered, it answered with the ASSIGNED home - Hendraheim for
+      Hendraheim, Breezehome for Breezehome - including one where SeverActions
+      had "Winstad Manor" misspelt and the resolver corrected it to Windstad.
+      It is the right house when it works.
+
+      It answered about half the time, and the failures were not about the
+      door: the SAME door resolved for one actor and not another. The actor is
+      used as a filter, and for a mother it is the WRONG filter, because
+      twenty-nine of thirty-one do not actually live where they are assigned.
+      So the actor-free form is tried FIRST and the actor-flavoured one only as
+      a fallback.
+
+      NOT the ownership-based lookups. FindHomeInteriorMarker has the best hit
+      rate of anything here - thirty-one of thirty-seven - and it is the wrong
+      house for twenty-nine of thirty-one, because it answers "where does this
+      actor's base live" rather than "where do they live now". It would put
+      children in Dragonsreach, Castle Dour Dungeon and Goldenrock Mine. }
+    If asHome == "" || !HasSeverActions()
+        Return None
+    EndIf
+    ObjectReference dest = SeverActionsNative.ResolveDestination(akWho, asHome)
+    If dest == None
+        ; TRY IT TITLE-CASED, because the name may have been flattened on the
+        ; way in and we do not know whether the lookup cares.
+        ;
+        ; We write "Proudspire Manor" and Native_GetHome hands back "proudspire
+        ; manor" - SeverActions normalises whatever arrives through its API, so
+        ; every home Kinship has ever set comes back lowercase while the ones a
+        ; player set through its own dialogue keep their capitals. Measured on
+        ; the live save: written at game time 200.67, read back flattened at
+        ; 214.76.
+        ;
+        ; Whether ResolveDestination is case-sensitive is unknown and not worth
+        ; another test cycle to find out - trying both forms costs one extra
+        ; call on a path that has already failed, and removes the question.
+        String titled = TitleCase(asHome)
+        If titled != asHome
+            dest = SeverActionsNative.ResolveDestination(akWho, titled)
+            If dest != None
+                Diag(LOG_DEBUG(), "'" + asHome + "' did not resolve but '" + \
+                    titled + "' did - the home name had been flattened to " + \
+                    "lower case.")
+            EndIf
+        EndIf
+    EndIf
+    If dest == None
+        Return None
+    EndIf
+    ObjectReference inner = SeverActionsNative.FindInteriorMarkerForDoor(dest)
+    If inner != None
+        Return inner
+    EndIf
+    inner = SeverActionsNative.FindInteriorMarkerForDoor(dest, akWho)
+    If inner != None
+        Return inner
+    EndIf
+    ; THE DOORSTEP IS A REAL ANSWER, not a failure. It is outside rather than
+    ; inside, but it is outside the right house - which beats the middle of
+    ; Whiterun, and beats refusing to move them at all.
+    Return dest
+EndFunction
+
+Keyword Function AnchorKeyword() Global
+    { LinkCustom02, the keyword DefaultSandboxLinkCustom02512 resolves against. }
+    Return Game.GetFormFromFile(0x0005D5E7, "Skyrim.esm") as Keyword
+EndFunction
+
+Package Function AnchoredStayPackage() Global
+    { Sandbox at my linked reference, radius 512. Vanilla, and UNCAPPED.
+
+      THIS IS THE WHOLE DESIGN, and it is better than the one it replaces.
+      SeverActions solves the same problem with twenty quest aliases, each
+      holding its own sandbox package that hard-references its own XMarker -
+      which is exactly why it stops at twenty children. One package per marker
+      means one alias per child.
+
+      A LINKED-REFERENCE package inverts that. The package says "sandbox at
+      whatever I am linked to", so a single shared package serves any number of
+      children, each pointing at a marker of their own. No alias table, no slot
+      ceiling, no plugin record.
+
+      The reason nobody does it this way is that Papyrus has GetLinkedRef and no
+      setter, so the link cannot be written from a script. That is the entire
+      content of our DLL native. }
+    Return Game.GetFormFromFile(0x000DD837, "Skyrim.esm") as Package
+EndFunction
+
+ObjectReference Function HomeAnchorFor(Int aiIdx, Actor akKid) Global
+    { The child's own marker, placed at their home the first time and reused
+      forever after.
+
+      PLACED AT THE CHILD, NOT THE PLAYER, and only ever while the child is
+      standing where it belongs. PlaceAtMe needs a loaded cell, which is the
+      same constraint that makes SeverActions ask you to be inside a building
+      before it will record a relax spot - not a design choice on either side,
+      just what the engine allows.
+
+      PERSISTENT, via the third argument. Without it the marker is a temporary
+      reference whose form id stops resolving after a reload, and the package
+      would quietly lose its anchor days later. }
+    String f = StoreFile()
+    Int mid = JsonUtil.GetIntValue(f, "child." + aiIdx + ".anchorId", 0)
+    If mid != 0
+        ObjectReference had = Game.GetFormEx(mid) as ObjectReference
+        If had != None
+            Return had
+        EndIf
+        ; Recorded but gone - fall through and place a fresh one rather than
+        ; leaving the child anchorless forever.
+    EndIf
+    Static xm = Game.GetFormFromFile(0x0000003B, "Skyrim.esm") as Static
+    If xm == None || akKid == None
+        Return None
+    EndIf
+    ObjectReference marker = akKid.PlaceAtMe(xm, 1, True)
+    If marker == None
+        Return None
+    EndIf
+    JsonUtil.SetIntValue(f, "child." + aiIdx + ".anchorId", marker.GetFormID())
+    JsonUtil.Save(f)
+    Return marker
+EndFunction
+
+Bool Function AnchorAtHome(Int aiIdx, Actor akKid, ObjectReference akAt = None) Global
+    { Pins a child to a marker at their current position. True if it took.
+
+      VERIFIES RATHER THAN ASSUMES, and that is what keeps the DLL optional.
+      SetLinkedRef is ours; GetLinkedRef is vanilla. Writing the link and then
+      reading it back tells us whether the plugin is actually present without
+      any availability flag, any version check, or any risk of calling into
+      something that is not there twice. }
+    If akKid == None
+        Return False
+    EndIf
+    Keyword kw = AnchorKeyword()
+    Package pkg = AnchoredStayPackage()
+    If kw == None || pkg == None
+        Diag(LOG_ERROR(), "AnchorAtHome: LinkCustom02 or " + \
+            "DefaultSandboxLinkCustom02512 did not resolve from Skyrim.esm.")
+        Return False
+    EndIf
+    ; PREFER A MARKER THAT ALREADY EXISTS IN THE HOME.
+    ;
+    ; The first version always placed one with PlaceAtMe, and PlaceAtMe needs
+    ; the target cell LOADED. Moving a child into an unloaded interior does not
+    ; load it, so on a thirty-child sweep only the three whose homes happened to
+    ; be in Whiterun - where the player was standing - got an anchor at all.
+    ; Everyone else silently fell through to the unanchored pin and walked back.
+    ;
+    ; The caller has already resolved a real, persistent marker inside the house
+    ; in order to move the child there. Linking to that one needs no placement,
+    ; no loaded cell and no player presence, and it is the same reference every
+    ; time so the anchor cannot drift.
+    ObjectReference marker = akAt
+    If marker == None
+        marker = HomeAnchorFor(aiIdx, akKid)
+        If marker == None
+            Return False
+        EndIf
+        ; Ours to position: put it where the child is now, which is the house.
+        marker.MoveTo(akKid)
+    EndIf
+
+    SNKin_Native.SetLinkedRef(akKid, marker, kw)
+    If akKid.GetLinkedRef(kw) != marker
+        Diag(LOG_WARN(), "AnchorAtHome: the linked reference did not take for " + \
+            akKid.GetDisplayName() + ". SkyrimNetKinship.dll is probably not " + \
+            "loaded; falling back to an unanchored pin.")
+        Return False
+    EndIf
+
+    ; PRIORITY 100, FLAGS 1 - copied from SeverActions rather than guessed.
+    ; Its own home sandbox uses exactly these when it has to beat a stubborn
+    ; package stack, and ours was sitting at 99 with flags 0 for no reason
+    ; better than that being the first thing tried.
+    ActorUtil.RemovePackageOverride(akKid, pkg)
+    ActorUtil.AddPackageOverride(akKid, pkg, 100, 1)
+    akKid.EvaluatePackage()
+    ; SAY SO, PER CHILD. Yrsa was sent home on her own, with a correct anchor,
+    ; and came back running Fertility Mode's travel package - and there was no
+    ; way to tell whether the override had been applied and lost, or never
+    ; applied at all. Those need different fixes, so the log now distinguishes
+    ; them rather than leaving it to be inferred from where she ended up.
+    Diag(LOG_DEBUG(), "Anchored " + akKid.GetDisplayName() + " to " + \
+        CellNameOf(marker) + " (" + ActorUtil.CountPackageOverride(akKid) + \
+        " override(s), priority 100).")
+    Return True
+EndFunction
+
+Package Function StayPackage() Global
+    { The sandbox package that holds a child where we put them.
+
+      VANILLA, NOT OURS. DefaultSandboxCurrentLocation1024 is Bethesda's own
+      generic package - sandbox at the actor's current location, radius 1024 -
+      and it is exactly the record this mod was about to add to its plugin.
+      Using it means no new form, no Creation Kit, no xEdit, and no chance of
+      the plugin and the scripts disagreeing about a form id.
+
+      "Current location" rather than "editor location" is the whole reason it
+      fits. These children are runtime PlaceActorAtMe references and have no
+      editor location at all, which is the root of the problem: with no home,
+      no owner and no editor location, the base's own package falls through to
+      a single default marker shared by every child from that base. Anchoring
+      to where they ARE works precisely because we position them first and
+      apply the package second.
+
+      Verified present in Skyrim.esm at 0x0BFB6B by reading the record headers
+      out of the master rather than trusting a wiki. }
+    Return Game.GetFormFromFile(0x0BFB6B, "Skyrim.esm") as Package
+EndFunction
+
+Function PinAtHome(Actor akKid) Global
+    { Makes a child stay where we just put them.
+
+      THE POSITION WAS NEVER THE PROBLEM. These actors are built on Fertility
+      Mode's child bases, which carry the vanilla child AI, and that AI has a
+      package whose location resolves - for an actor with no home and no owner
+      - to a single default marker shared by every child from the same base.
+      Measured: three children landed on byte-identical coordinates after one
+      four-hour sleep, having been sent to Solitude and Falkreath. Moving them
+      changes where they ARE; the package decides where they BELONG, and it
+      wins at every re-evaluation.
+
+      Variable07 was the cheap fix and it is not enough: the vanilla child AI
+      understands eight Hearthfire houses and nothing else, so it cannot say
+      the Blue Palace, Irgnir's House, Hendraheim or Myrwatch.
+
+      So we out-rank it. A sandbox package anchored to the actor's own position
+      at the moment it starts, applied as a PapyrusUtil package override at a
+      priority above the base's - which is what TT_MARAS does for spouses, and
+      it works there.
+
+      PRIORITY 60. Overrides run highest-first and vanilla sandbox packages sit
+      well below this; leaving room above means a future higher-priority need
+      does not have to renumber anything.
+
+      SILENT NO-OP UNTIL THE PLUGIN CARRIES THE RECORD. Shipping this before
+      the package exists costs one failed form lookup and changes nothing, so
+      the script and the plugin can be updated independently. }
+    If akKid == None
+        Return
+    EndIf
+    Package stay = StayPackage()
+    If stay == None
+        ; SAY SO. This was a silent return once, and a silent return is
+        ; indistinguishable from a package that applied and did not work -
+        ; which cost a whole test cycle. The form id is verified present in
+        ; Skyrim.esm, so reaching here means something is wrong with the
+        ; lookup itself rather than with the plan.
+        Diag(LOG_ERROR(), "PinAtHome: DefaultSandboxCurrentLocation1024 " + \
+            "(Skyrim.esm 0x0BFB6B) did not resolve. Nobody can be pinned.")
+        Return
+    EndIf
+    ; Removed first so re-sending a child re-anchors them here rather than
+    ; stacking a second override that still points at the old spot.
+    ActorUtil.RemovePackageOverride(akKid, stay)
+    ; 99, NOT 60, AND THE NUMBER IS THE EXPERIMENT.
+    ;
+    ; The engine told us what we are fighting. A package diagnostic run against
+    ; all thirty-two embodied children found fourteen of them running
+    ; _JSW_BB_TravelToWhiterun, a TRAVEL package out of Fertility Mode.esm, and
+    ; eleven more running BYOHUrchin_LuciaSandboxDay8x12 - the vanilla urchin
+    ; sandbox, which parks a child at the Gildergreen because that is where
+    ; Lucia stands. Two packages, one destination, which is why it read as a
+    ; single mechanism for weeks.
+    ;
+    ; The two children who were actually home were adopted through Hearthfire,
+    ; which puts them in a quest ALIAS, and an alias package outranks an actor's
+    ; base packages. That is the mechanism that works.
+    ;
+    ; Whether a PapyrusUtil override can reach that far up the stack is the one
+    ; thing nobody has measured. Its own documentation says priority runs 0-100
+    ; and the highest wins, so 60 was leaving forty points on the table for no
+    ; reason. If 99 still loses, the answer is not a bigger number - it is a
+    ; quest alias of our own, and we will know that rather than suspect it.
+    ActorUtil.AddPackageOverride(akKid, stay, 99, 0)
+    akKid.EvaluatePackage()
+    Diag(LOG_DEBUG(), "Pinned " + akKid.GetDisplayName() + " at " + \
+        CellNameOf(akKid) + " (priority 99, " + \
+        ActorUtil.CountPackageOverride(akKid) + " override(s) on them now).")
+EndFunction
+
+Function UnpinFromHome(Actor akKid) Global
+    { Releases a child from whichever stay package is on them.
+
+      BOTH OF THEM, because which one a child carries depends on whether the
+      DLL was loaded when they were last sent home, and summoning has to work
+      either way. Removing an override that was never added is a no-op. }
+    If akKid == None
+        Return
+    EndIf
+    Package anchored = AnchoredStayPackage()
+    If anchored != None
+        ActorUtil.RemovePackageOverride(akKid, anchored)
+    EndIf
+    Package stay = StayPackage()
+    If stay != None
+        ActorUtil.RemovePackageOverride(akKid, stay)
+    EndIf
+    ; THE LINK STAYS. Summoning is temporary and the marker is still sitting in
+    ; the child's home; clearing it would mean placing a new one on the next
+    ; send-home for no reason. Only the package comes off.
+    akKid.EvaluatePackage()
+EndFunction
+
+Int Function HouseIndexFor(String asHome) Global
+    { Hearthfire's house number for a home name, or 0 if it has none.
+
+      THESE EIGHT ARE THE WHOLE VOCABULARY of the vanilla child AI. Taken from
+      BYOHRelationshipAdoptionScript.TranslateHouseIntToInteriorLoc, which is
+      what actually reads Variable07 - so this list is not a guess, it is the
+      other side of the contract.
+
+      A HOME THAT IS NOT A PLAYER HOUSE CANNOT BE EXPRESSED. Several children
+      here live in the Blue Palace or Irgnir's House, and no integer says that.
+      If Variable07 turns out to work, that is the limit of how far it can be
+      taken and the rest still need a package of our own. }
+    String h = ToLower(asHome)
+    If h == "proudspire manor"
+        Return 1
+    ElseIf h == "hjerim"
+        Return 2
+    ElseIf h == "vlindrel hall"
+        Return 3
+    ElseIf h == "honeyside"
+        Return 4
+    ElseIf h == "breezehome"
+        Return 5
+    ElseIf h == "lakeview manor" || h == "falkreath house"
+        Return 6
+    ElseIf h == "windstad manor" || h == "winstad manor" || h == "hjaalmarch house"
+        Return 7
+    ElseIf h == "heljarchen hall" || h == "pale house"
+        Return 8
+    EndIf
+    Return 0
+EndFunction
+
+Bool Function TryHomePackageStatic(String asChildName) Global
+    { EXPERIMENT: make the child's own AI package take them home.
+
+      THE THING WE HAVE BEEN FIGHTING is the package, not the position. These
+      actors are built from Fertility Mode's child bases, which carry the
+      vanilla child AI, and that AI resolves a home from Variable07. With no
+      value set it falls through to one default marker shared by every actor
+      from the same base - which is why three children landed on byte-identical
+      coordinates after a four-hour sleep, and why moving them has never
+      survived one.
+
+      So instead of moving them somewhere the package disagrees with, this
+      tells the package where they live and asks it to act.
+
+      MoveToPackageLocation IS THE TEST, and it gives the answer immediately
+      rather than after a night's sleep: it sends the actor wherever their
+      package currently resolves. Land inside the right house and Variable07 is
+      being read, and the fix is a line of code. Land back at the default
+      marker and it is not, and we need our own package in the plugin.
+
+      This is exactly what Fertility Mode and Hearthfire both do - set
+      Variable07, evaluate, move - minus the adoption. }
+    Int idx = ChildIndex(asChildName)
+    If idx < 0
+        Diag(LOG_ERROR(), "TryHomePackage: no child named '" + asChildName + "'.")
+        Return False
+    EndIf
+    Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".refId", 0)
+    Actor kid = Game.GetFormEx(rid) as Actor
+    If kid == None
+        Diag(LOG_WARN(), "TryHomePackage: " + asChildName + " has no living reference.")
+        Return False
+    EndIf
+    String where = JsonUtil.GetStringValue(StoreFile(), "child." + idx + ".home", "")
+    Int house = HouseIndexFor(where)
+    If house == 0
+        Diag(LOG_WARN(), "TryHomePackage: '" + where + "' is not one of the eight " + \
+            "houses the vanilla child AI understands, so Variable07 cannot say it. " + \
+            "Try this on a child who lives in a player home.")
+        Return False
+    EndIf
+    Diag(LOG_INFO(), "TryHomePackage: telling " + asChildName + " they live at " + \
+        where + " (house " + house + "). Was in '" + CellNameOf(kid) + "'.")
+    kid.SetActorValue("Variable07", house as Float)
+    kid.EvaluatePackage()
+    kid.MoveToPackageLocation()
+    ; The answer, in one line. Read it in the log rather than by walking there.
+    Diag(LOG_WARN(), "TryHomePackage: " + asChildName + " is now in '" + \
+        CellNameOf(kid) + "'. If that is " + where + ", the package reads " + \
+        "Variable07 and this is the fix. If it is anywhere else, it does not.")
+    MarkPlaced(idx, kid)
+    Return True
+EndFunction
+
+Function MarkPlaced(Int aiIdx, Actor akKid) Global
+    { Records where WE last put a child, so a later displacement is detectable.
+
+      DEFERRED, NOT IMMEDIATE, and that correction is the whole of this
+      function's history. Reading GetPositionX straight after MoveTo returns
+      the position the actor is moving FROM when the destination cell is not
+      loaded - the engine has not applied the move yet. The first run recorded
+      four children as standing in Whiterun a moment after being sent to
+      Solitude, and the next sweep duly reported all four as displaced by a
+      hundred and twenty thousand units. They had gone exactly where they were
+      sent; the baseline was wrong.
+
+      So this only ARMS a rebase. The next sweep reads the position once the
+      engine has settled it and records that instead. }
+    If akKid == None || aiIdx < 0
+        Return
+    EndIf
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".rebase", 1)
+    JsonUtil.Save(StoreFile())
+EndFunction
+
+Function TakeBaseline(Int aiIdx, Actor akKid) Global
+    { Records the settled position and clears the rebase flag. }
+    String f = StoreFile()
+    JsonUtil.SetFloatValue(f, "child." + aiIdx + ".atX", akKid.GetPositionX())
+    JsonUtil.SetFloatValue(f, "child." + aiIdx + ".atY", akKid.GetPositionY())
+    JsonUtil.SetFloatValue(f, "child." + aiIdx + ".atZ", akKid.GetPositionZ())
+    JsonUtil.SetIntValue(f, "child." + aiIdx + ".rebase", 0)
+    JsonUtil.Save(f)
+EndFunction
+
+Function WatchDisplacement(Int aiIdx, Actor akKid) Global
+    { Reports a child that has moved on its own since we placed it.
+
+      TWO CHILDREN COME BACK AND THEY COME BACK DIFFERENTLY. One reappears
+      beside the player wherever the player is; the other returns to one fixed
+      spot - the place every child was created, which for a PlaceActorAtMe
+      reference is its editor location. Those are different mechanisms and the
+      fix for one is not the fix for the other, so this reports WHICH, rather
+      than assuming.
+
+      Distance from the player is the discriminator and is logged either way:
+      close to the player means something is attaching them to us, far from the
+      player and unchanging means something is resetting them to where they
+      were made.
+
+      DEBUG ONLY AND READ-ONLY. Nothing here moves anyone or writes anything;
+      the aim is to identify the culprit, not to fight it. Fighting a mod that
+      re-decides every few seconds is a loop nobody wins. }
+    If akKid == None || aiIdx < 0 || LogLevel() < LOG_DEBUG()
+        Return
+    EndIf
+    String f = StoreFile()
+    ; A MOVE WE MADE IS SETTLED BY NOW. Take the baseline and report nothing:
+    ; this sweep is the first moment the engine's answer can be trusted.
+    If JsonUtil.GetIntValue(f, "child." + aiIdx + ".rebase", 0) == 1
+        TakeBaseline(aiIdx, akKid)
+        Return
+    EndIf
+    Float ax = JsonUtil.GetFloatValue(f, "child." + aiIdx + ".atX", 0.0)
+    Float ay = JsonUtil.GetFloatValue(f, "child." + aiIdx + ".atY", 0.0)
+    Float az = JsonUtil.GetFloatValue(f, "child." + aiIdx + ".atZ", 0.0)
+    If ax == 0.0 && ay == 0.0 && az == 0.0
+        Return      ; never placed by us, nothing to compare against
+    EndIf
+    Float dx = akKid.GetPositionX() - ax
+    Float dy = akKid.GetPositionY() - ay
+    Float dz = akKid.GetPositionZ() - az
+    Float moved = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    ; A THRESHOLD, because an actor settling onto navmesh or stepping aside is
+    ; not a displacement. 600 units is roughly a room's width - far enough that
+    ; nothing incidental reaches it, near enough to catch a nudge across a cell.
+    If moved < 600.0
+        Return
+    EndIf
+    Actor player = Game.GetPlayer()
+    Float toPlayer = akKid.GetDistance(player)
+    String nm = JsonUtil.GetStringValue(f, "child." + aiIdx + ".name", "?")
+    ; DISTANCE TO THE PLAYER ONLY DISCRIMINATES WHEN THE PLAYER HAS MOVED.
+    ;
+    ; "Next to the player" and "back at the place they were created" are the
+    ; same reading while the player is standing at that place - which is what
+    ; happened on the first run, in Whiterun, a few strides from where every
+    ; child was given a body. Reporting only the distance made an ambiguous
+    ; sample look like an answer.
+    ;
+    ; So both positions are logged. Where the child lands across SEVERAL
+    ; reports is what settles it: identical coordinates every time is a reset
+    ; to a fixed point, coordinates that follow the player is attachment.
+    Diag(LOG_DEBUG(), "DISPLACED: " + nm + " has moved " + moved + \
+        " units since we placed them.")
+    Diag(LOG_DEBUG(), "    was    " + ax + ", " + ay + ", " + az)
+    Diag(LOG_DEBUG(), "    now    " + akKid.GetPositionX() + ", " + \
+        akKid.GetPositionY() + ", " + akKid.GetPositionZ() + \
+        "   cell '" + CellNameOf(akKid) + "'")
+    Diag(LOG_DEBUG(), "    player " + player.GetPositionX() + ", " + \
+        player.GetPositionY() + ", " + player.GetPositionZ() + \
+        "   cell '" + CellNameOf(player) + "'")
+    Diag(LOG_DEBUG(), "    distance to player " + toPlayer + \
+        "  teammate=" + akKid.IsPlayerTeammate() + \
+        "   (compare 'now' across reports: fixed = reset, follows player = attachment)")
+    ; DID THE PIN SURVIVE? Three different failures look identical from the
+    ; outside - the override was never added, it was added and dropped, or it
+    ; is still there and simply loses. Counting it separates the first two from
+    ; the third, and only the third means the package approach is wrong.
+    Diag(LOG_DEBUG(), "    package overrides still on them: " + \
+        ActorUtil.CountPackageOverride(akKid))
+    ; RE-BASELINE, so one displacement is reported once rather than every sweep
+    ; forever. A child that keeps being dragged back reports every time it
+    ; happens, which is the signal we actually want.
+    MarkPlaced(aiIdx, akKid)
+EndFunction
+
+String Function CellNameOf(ObjectReference akRef) Global
+    { The reference's cell name, or "" when it cannot be read. }
+    If akRef == None
+        Return ""
+    EndIf
+    Cell c = akRef.GetParentCell()
+    If c == None
+        Return ""
+    EndIf
+    Return c.GetName()
+EndFunction
+
+Function NoteHome(Int aiIdx, Actor akKid) Global
+    { Publishes where a child lives into the store, so the panel can show it.
+
+      THE HOME IS NOT OURS AND CANNOT BE READ WHERE IT IS NEEDED. SeverActions
+      keeps it in the SKSE co-save, reachable only through a Papyrus native,
+      while the panel is C++ reading this mod's JSON. So the value is copied
+      across on the way past.
+
+      WRITES ONLY ON CHANGE. This runs for every embodied child on every sweep,
+      and JsonUtil.Save is a file write - doing it unconditionally would mean
+      rewriting the whole store several times a minute to record nothing.
+
+      An empty answer is stored as empty rather than skipped: "no home" is the
+      case the player most needs to see, and leaving a stale value there would
+      hide exactly that. }
+    If akKid == None || aiIdx < 0 || !HasSeverActions()
+        Return
+    EndIf
+    String now = SeverActionsNative.Native_GetHome(akKid)
+    If now != JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".home", "")
+        JsonUtil.SetStringValue(StoreFile(), "child." + aiIdx + ".home", now)
+        JsonUtil.Save(StoreFile())
+    EndIf
+EndFunction
+
+Int Function SendChildHome(Int aiIdx) Global
+    { Moves one child to the home it is already recorded as living in.
+
+      1 moved inside, 2 moved to the doorstep, 0 could not. }
+    Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0)
+    If rid == 0
+        Return 0
+    EndIf
+    Actor kid = Game.GetFormEx(rid) as Actor
+    If kid == None || kid.IsDead()
+        Return 0
+    EndIf
+    If !HasSeverActions()
+        Return 0
+    EndIf
+    String nm = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?")
+    String where = SeverActionsNative.Native_GetHome(kid)
+    If where == ""
+        ; NEVER GIVEN ONE, or given one before the mother had a home herself.
+        ; Inheriting now is the same rule spawning uses, just late.
+        Int mumId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".motherId", 0)
+        Actor mum = Game.GetFormEx(mumId) as Actor
+        If mum != None
+            InheritHome(kid, mum)
+            where = SeverActionsNative.Native_GetHome(kid)
+        EndIf
+    EndIf
+    If where == ""
+        Diag(LOG_WARN(), nm + " has no home recorded and neither does their " + \
+            "mother, so there is nowhere to send them.")
+        Return 0
+    EndIf
+    ObjectReference marker = HomeMarkerFor(kid, where)
+    If marker == None
+        ; THE MOTHER'S OWN HOUSE, ASKED FOR DIRECTLY.
+        ;
+        ; HomeMarkerFor resolves a NAME through the location database, and that
+        ; database is built for travel destinations - it knows "Breezehome" and
+        ; "Hendraheim" but need not know every private cell by name. When the
+        ; home came from ownership rather than assignment, the ownership lookup
+        ; can hand back the marker without the name ever being parsed.
+        ;
+        ; Same safety as above: only reachable when the name route failed, so it
+        ; cannot override an assigned home that resolved.
+        Int mumId2 = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".motherId", 0)
+        Actor mum2 = Game.GetFormEx(mumId2) as Actor
+        If mum2 != None
+            marker = SeverActionsNative.FindHomeInteriorMarker(mum2)
+            If marker != None
+                Diag(LOG_DEBUG(), "'" + where + "' did not resolve by name; using " + \
+                    mum2.GetDisplayName() + "'s own home marker instead.")
+            EndIf
+        EndIf
+    EndIf
+    If marker == None
+        Diag(LOG_WARN(), "Could not work out where '" + where + "' is, so " + \
+            nm + " has not been moved.")
+        Return 0
+    EndIf
+    ; LET GO OF THE PLAYER FIRST, OR THE MOVE DOES NOT STICK.
+    ;
+    ; Moving an actor changes where it IS, not what it WANTS. A child running a
+    ; follow package walks straight back, and on the live save that is exactly
+    ; what happened - one child re-followed the player persistently and another
+    ; reappeared after being sent home.
+    ;
+    ; Three separate things can hold a child to the player and all three are
+    ; cleared, because whichever one is missed is the one that wins:
+    ;
+    ;   SkyrimNet packages - its actions apply real AI packages, and a follow
+    ;     applied hours ago is still applied. CancelPendingPackageTasks first,
+    ;     or a scheduled re-apply reinstates what ClearAllPackages just removed.
+    ;   Teammate status - a teammate follows without any package at all, so
+    ;     clearing packages alone leaves it following.
+    ;   SeverActions' follower flag - its home verifier treats followers
+    ;     differently, and a stale flag makes it manage an actor that is not one.
+    ;
+    ; ALL SOFT. SkyrimNet is a hard dependency of this mod so its calls are
+    ; safe; the SeverActions call is behind the same guard as everything else.
+    SkyrimNetApi.CancelPendingPackageTasks(kid)
+    SkyrimNetApi.ClearAllPackages(kid)
+    If kid.IsPlayerTeammate()
+        kid.SetPlayerTeammate(False, False)
+        Diag(LOG_DEBUG(), nm + " was a player teammate and would have followed you " + \
+            "home again; that has been cleared.")
+    EndIf
+
+    kid.MoveTo(marker)
+    ; Rebuild the 3D at the new position, or a child moved into an unloaded
+    ; cell arrives as an invisible reference.
+    kid.QueueNiNodeUpdate()
+    ; RE-PICK AT THE NEW PLACE. Without this the actor keeps running whatever
+    ; it decided on before it was moved, which for one standing in Whiterun is
+    ; a package evaluated for Whiterun.
+    kid.EvaluatePackage()
+    Int how = 2
+    If marker.GetWorldSpace() == None
+        how = 1
+    EndIf
+    NoteHome(aiIdx, kid)
+    MarkPlaced(aiIdx, kid)
+    ; A DISMISSED FOLLOWER WITH A HOME. That exact state is the whole fix.
+    ;
+    ; SeverActions runs two different sandbox packages and only one of them
+    ; goes home. The engine named them for us:
+    ;
+    ;   active follower      -> SeverActions_LeisureSandbox   idles where it is
+    ;   dismissed + homed    -> SeverActions_HomeSandbox_V2   goes home
+    ;
+    ; Freya proved it. She was made an active companion for a moment to inspect
+    ; a setting, and she is running LeisureSandbox at the Gildergreen with her
+    ; home correctly recorded as Breezehome. Brennen, who is not an active
+    ; follower, runs HomeSandbox_V2 and is standing in the Temple of Kynareth.
+    ; Same mod, same home data, different follow state, opposite outcome.
+    ;
+    ; Marking every child a follower was right - it is what lets the home
+    ; verifier see them at all, and that verifier exists precisely to rescue
+    ; dynamic FE/FF references stuck on a fallback package. Leaving them ACTIVE
+    ; was the error, and it put all of them in the leisure half.
+    ;
+    ; Dismiss first, then re-assert: ClearFollowerData preserves home and combat
+    ; style for re-recruit but says nothing about the roster flag, so the flag
+    ; goes back on afterwards rather than being assumed to survive.
+    ; OUR OWN ANCHOR, AND NOTHING ELSE'S.
+    ;
+    ; Every previous attempt handed some part of this to another mod and every
+    ; one of them capped or failed: Variable07 speaks only eight Hearthfire
+    ; houses, SeverActions' home sandbox is twenty quest aliases wide, and a
+    ; current-location package pins a child wherever it happens to be standing -
+    ; which the diagnostic caught doing exactly that, at the Gildergreen.
+    ;
+    ; A marker the child owns, a vanilla package that follows it, and a
+    ; PapyrusUtil override above everything else. No cap, no plugin record, and
+    ; nothing here needs SeverActions to be installed.
+    If !AnchorAtHome(aiIdx, kid, marker)
+        ; The DLL is absent or the forms did not resolve. An unanchored pin is
+        ; strictly worse - it holds them wherever they are rather than where
+        ; they live - but it is better than leaving Fertility Mode's travel
+        ; package unopposed, and it is what a Papyrus-only install gets.
+        PinAtHome(kid)
+    EndIf
+    ; SeverActions, if present, is now only asked for the things it is
+    ; genuinely the authority on: where the child lives, and a bed to sleep in.
+    ; Its follower roster and home verifier are deliberately NOT used - a child
+    ; is not a follower, and pretending otherwise put every one of them into a
+    ; leisure sandbox at the Gildergreen.
+    If HasSeverActions()
+        SeverActionsNative.Native_SetHome(kid, where)
+        SeverActionsNative.Native_BedAssignment_Claim(kid)
+        ; UN-ENROL THEM, AND THIS UNDOES A MESS OF MY OWN MAKING.
+        ;
+        ; An earlier build set this flag TRUE to get SeverActions' home verifier
+        ; to notice these children. A later build stopped calling it - but the
+        ; flag lives in the SKSE co-save, so it was never actually cleared, and
+        ; thirty-one children stayed enrolled as followers. SeverActions then
+        ; kept re-applying its leisure sandbox on its own heartbeat and quietly
+        ; took back children that were already home: Freya and Inga were inside
+        ; Breezehome on our package one run and out in the open on
+        ; SeverActions_LeisureSandbox the next, with the anchor unchanged.
+        ;
+        ; A child is not a follower. Now that the anchored package works on its
+        ; own, SeverActions has no business managing them at all - it keeps only
+        ; the two jobs it is genuinely the authority on, the home name and a bed.
+        SeverActionsNative.Native_SetIsFollower(kid, False)
+        SeverActionsNative.Native_ClearFollowerData(kid)
+    EndIf
+    If how == 1
+        Diag(LOG_INFO(), nm + " has gone home to " + where + ".")
+    Else
+        Diag(LOG_INFO(), nm + " has been left at the door of " + where + \
+            " - no interior marker could be found for it.")
+    EndIf
+    Return how
+EndFunction
+
+Bool Function SendChildHomeStatic(String asChildName) Global
+    { The panel's per-child entry point. }
+    Int idx = ChildIndex(asChildName)
+    If idx < 0
+        Diag(LOG_ERROR(), "SendChildHome: no child named '" + asChildName + "'.")
+        Return False
+    EndIf
+    Return SendChildHome(idx) > 0
+EndFunction
+
+Int Function SendAllChildrenHomeStatic() Global
+    { Sends every embodied child to its recorded home. Returns how many moved.
+
+      THE CASE THIS EXISTS FOR: children placed before homes were being
+      assigned are standing wherever the player happened to be when the button
+      was pressed - on this save, a crowd of them in the middle of Whiterun.
+      Walking each one to a different hold as a follower is not a realistic
+      way to fix twenty-five of them. }
+    Int moved = 0
+    Int inside = 0
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+            Int how = SendChildHome(i)
+            If how > 0
+                moved += 1
+                If how == 1
+                    inside += 1
+                EndIf
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    Diag(LOG_INFO(), "Sent " + moved + " child(ren) home - " + inside + \
+        " indoors, " + (moved - inside) + " to the doorstep.")
+    If Notify()
+        Debug.Notification("[Kinship] " + moved + " children sent home")
+    EndIf
+    Return moved
+EndFunction
+
+Bool Function SummonChildStatic(String asChildName) Global
+    { Brings a child that already has an actor to the player. The panel's
+      other entry point.
+
+      THE PROBLEM THIS SOLVES IS FINDING THEM AT ALL. A child this mod placed
+      is somewhere definite - beside its mother, or wherever the player stood
+      when the button was pressed - and nothing tells you where that was. It is
+      not in the SkyrimNet UI to be summoned from either, because SkyrimNet
+      registers a spawned child under its BASE actor name (Fertility Mode's
+      "Dovahkid") until a character record is authored for it, and authoring
+      one needs the actor in your crosshair. Circular.
+
+      MOVETO ON THE STORED REFERENCE, NEVER PlaceAtMe. This is the whole point:
+      the console route a player would otherwise reach for spawns a SECOND
+      actor from the same base and leaves the original standing wherever it
+      was, and there is no way back from that - the roster is keyed by name, so
+      two Freyas make every later lookup ambiguous. refId is the reference we
+      created and recorded, so moving it is exact.
+
+      DELIBERATELY NOT LIMITED BY STAGE. Unlike SpawnChildBodyStatic there is
+      nothing to refuse: if the child has a reference then it is old enough to
+      have one, and that question was settled when it was placed. }
+    Int idx = ChildIndex(asChildName)
+    If idx < 0
+        Diag(LOG_ERROR(), "SummonChild: no child named '" + asChildName + "'.")
+        Return False
+    EndIf
+    Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".refId", 0)
+    If rid == 0
+        Diag(LOG_WARN(), asChildName + " has no body to summon. Give them one first.")
+        Return False
+    EndIf
+    Actor kid = Game.GetFormEx(rid) as Actor
+    If kid == None
+        ; A REFERENCE THAT NO LONGER RESOLVES. Growing up destroys the old one
+        ; - Beeing Female deletes it outright - so this is a real state rather
+        ; than a corrupt store, and saying so is more use than failing silently.
+        Diag(LOG_WARN(), asChildName + "'s recorded reference no longer exists. " + \
+            "It was probably replaced when they grew up.")
+        Return False
+    EndIf
+    If kid.IsDead()
+        Diag(LOG_WARN(), asChildName + " is dead and will not be summoned.")
+        Return False
+    EndIf
+    kid.MoveTo(Game.GetPlayer())
+    ; The 3D has to be rebuilt at the new position or a child moved from an
+    ; unloaded cell arrives as an invisible reference you cannot click.
+    kid.QueueNiNodeUpdate()
+    MarkPlaced(idx, kid)
+    ; RELEASED, NOT PINNED. Summon is for bringing a child TO you; leaving the
+    ; stay package on would have them wander back to the house mid-conversation.
+    UnpinFromHome(kid)
+    Diag(LOG_INFO(), asChildName + " has been brought to you. Put them in your " + \
+        "crosshair and use SkyrimNet's bio hotkey to author their character record.")
+    If Notify()
+        Debug.Notification("[Kinship] " + asChildName + " is here")
+    EndIf
+    Return True
 EndFunction
 
 Bool Function SpawnChildBodyStatic(String asChildName) Global
@@ -3839,6 +4798,41 @@ Bool Function SpawnChildBodyStatic(String asChildName) Global
     Return SpawnOwnedChild(idx) != None
 EndFunction
 
+Function RetryFailedSpawnsOnce() Global
+    { Clears spawnFailed once, because the rule that set it has changed.
+
+      spawnFailed exists so a child whose race cannot be resolved is not
+      retried every sweep forever. That was right, but it also freezes the
+      verdict: Yannick was marked failed when the lookup consulted only his
+      mother, and stayed failed after the lookup learned to consult his father
+      and the player too. A flag that records "we tried" has to be cleared when
+      "we" changes.
+
+      ONCE, guarded by a key in the store, so this is a migration and not a
+      standing retry loop. }
+    String f = StoreFile()
+    If JsonUtil.GetIntValue(f, "raceFallbackRetried", 0) == 1
+        Return
+    EndIf
+    Int cleared = 0
+    Int n = JsonUtil.StringListCount(f, "roster")
+    Int i = 0
+    While i < n
+        If JsonUtil.GetIntValue(f, "child." + i + ".spawnFailed", 0) == 1
+            JsonUtil.SetIntValue(f, "child." + i + ".spawnFailed", 0)
+            cleared += 1
+        EndIf
+        i += 1
+    EndWhile
+    JsonUtil.SetIntValue(f, "raceFallbackRetried", 1)
+    JsonUtil.Save(f)
+    If cleared > 0
+        Diag(LOG_INFO(), "Cleared " + cleared + " stale spawn failure(s) so they " + \
+            "can be retried now that a child's body can be built from either " + \
+            "parent's race rather than only the mother's.")
+    EndIf
+EndFunction
+
 Actor Function SpawnOwnedChild(Int aiIdx) Global
     { Gives a claimed child a body, at the stage where one becomes true.
 
@@ -3856,12 +4850,17 @@ Actor Function SpawnOwnedChild(Int aiIdx) Global
     EndIf
     Int mumId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".motherId", 0)
     Actor mum = Game.GetFormEx(mumId) as Actor
-    Int raceIdx = FmrRaceIndex(store, mum)
+    ; THE FATHER IS HALF THE ANSWER AND WAS NEVER ASKED. A mother whose race
+    ; Fertility Mode does not carry left the child with no body at all, even
+    ; when the father's race was one it knows perfectly well.
+    Int dadId2 = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".fatherId", 0)
+    Actor dad2 = Game.GetFormEx(dadId2) as Actor
+    Int raceIdx = FmrRaceIndex(store, mum, dad2)
     If raceIdx < 0
         Diag(LOG_WARN(), "SpawnOwnedChild: " + \
             JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
-            " has no supported child race for its mother - no body will appear. " + \
-            "The record and its parentage are unaffected.")
+            " has no supported child race for either parent or the player - " + \
+            "no body will appear. The record and its parentage are unaffected.")
         ; Marked so this is not retried every sweep forever.
         JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".spawnFailed", 1)
         JsonUtil.Save(StoreFile())
@@ -3921,7 +4920,21 @@ Actor Function SpawnOwnedChild(Int aiIdx) Global
     ; A child belongs where its mother lives. Soft - no SeverActions, no home,
     ; and nothing else is affected.
     InheritHome(kid, mum)
+    MarkPlaced(aiIdx, kid)
     Diag(LOG_INFO(), (nm + " has a body now (" + StageName(StageForChild(aiIdx)) + ")."))
+    ; AND STRAIGHT HOME, rather than pinned where they were born.
+    ;
+    ; This used to call PinAtHome directly, which anchors a child to wherever
+    ; they happen to be standing - and a newly spawned child is standing beside
+    ; its mother or the player, not in its house. Yannick was pinned in the
+    ; Temple of Kynareth with his home recorded as the Blue Palace, which is
+    ; exactly the wrong-anchor failure the whole home system was rebuilt to
+    ; remove; it simply had a second entrance nobody had closed.
+    ;
+    ; SendChildHome already knows how to resolve the house, move them there and
+    ; anchor them properly, so the spawn path defers to it instead of keeping a
+    ; worse copy of the same idea.
+    SendChildHome(aiIdx)
     Return kid
 EndFunction
 
@@ -4151,8 +5164,19 @@ EndFunction
 Int Function TakeBabyItem(Int aiIdx) Global
     { Removes FMR's baby armor from this child's mother and stops its clock.
 
-      1 - taken. 2 - there was never anything to take, stop asking.
-      0 - not knowable yet; ask again next sweep. }
+      1 - TAKEN. We cleared FMR's clock, so FMR will never spawn this child.
+          That is a debt: whoever stops the other mod's childhood owes the
+          child a body. RefreshChildStage reads this as ownership for exactly
+          that reason.
+      2 - there was never anything to take, stop asking. FMR is not tracking
+          the mother, or her clock was already zero - either way we did not
+          stop anything and are not on the hook for a body.
+      0 - not knowable yet; ask again next sweep.
+
+      THE SUCCESS PATH USED TO RETURN 2, which made "we took it" and "there was
+      nothing to take" the same answer and lost the distinction this contract
+      was written to record. Nothing read the value beyond `!= 0` at the time,
+      so it went unnoticed until the spawn gate needed to tell them apart. }
     _JSW_BB_Storage store = ResolveStorage()
     If store == None
         Return 2
@@ -4201,6 +5225,41 @@ Int Function TakeBabyItem(Int aiIdx) Global
         Return 2
     EndIf
 
+    ; THE ITEM HAS TO PLAUSIBLY BE THIS CHILD'S.
+    ;
+    ; BabyAdded is indexed by MOTHER, not by child, so it holds whatever she is
+    ; carrying NOW - which is not necessarily the pregnancy this record came
+    ; from. A tied birth answers 0 above while its mother is unknown and keeps
+    ; asking every sweep; resolve that mother by hand while a LATER pregnancy
+    ; is in flight and, without this, we would take the new baby's item and
+    ; stamp the outcome on the older child. That ends a childhood which was
+    ; never this record's to end, and the later birth - claimed properly at its
+    ; own labour - would get a body of its own regardless. Two bodies, one
+    ; item.
+    ;
+    ; THE STAMP IS THE TEST. Fertility Mode writes BabyAdded as it hands the
+    ; item over, so for a birth we claimed at labour it lands within moments of
+    ; `born`. Only a LATER stamp is suspicious:
+    ;
+    ;   claimed at labour     added - born  ~= 0        take it
+    ;   adopted in flight     added - born  <  0        take it; born is when
+    ;                                                   we adopted, the item is
+    ;                                                   days older
+    ;   a different pregnancy added - born  >> 0        leave it alone
+    ;
+    ; Two days rather than one. A later pregnancy is weeks away by definition -
+    ; there is no value between one day and a fortnight that separates these
+    ; cases differently - so the wider window costs nothing and absorbs any
+    ; game-time jump between labour and the handover.
+    Float ownBorn = JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".born", 0.0)
+    If ownBorn > 0.0 && (added[mi] - ownBorn) > 2.0
+        Diag(LOG_WARN(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+            " was not confiscated for: " + mother.GetDisplayName() + " is carrying a baby " + \
+            "item stamped " + (added[mi] - ownBorn) + " days AFTER that child was recorded, " + \
+            "so it belongs to a later pregnancy. Leaving it for the birth that owns it.")
+        Return 2
+    EndIf
+
     ; Papyrus arrays are references, so this writes through to FMR's storage
     ; exactly as its own `Storage.BabyAdded[index] = 0.0` does.
     Armor[] kinds = store.BirthBabyRace
@@ -4233,7 +5292,10 @@ Int Function TakeBabyItem(Int aiIdx) Global
         JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
         ". This mod owns that childhood now, and FMR will not spawn the child " + \
         "on its own timer. THIS CANNOT BE UNDONE.")
-    Return 2
+    ; 1, NOT 2 - see the contract above. This is the branch that cleared FMR's
+    ; clock, and the spawn gate needs to be able to tell it from the branches
+    ; that found nothing to clear.
+    Return 1
 EndFunction
 
 Function CheckBabyItem(Int aiIdx, Int aiStage) Global
@@ -4502,12 +5564,27 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
     EndIf
     ; A BODY AT THE FIRST STAGE THAT WARRANTS ONE.
     ;
-    ; Only for a birth this mod CLAIMED - `owned` is absent on every record
-    ; that predates the feature, so nothing already on the roster suddenly
-    ; sprouts an actor. And only once: refId is set on success, spawnFailed on
-    ; an unsupported race, and either stops this retrying every sweep.
+    ; Only for a birth this mod is RESPONSIBLE for - `owned` is absent on every
+    ; record that predates the feature, so nothing already on the roster
+    ; suddenly sprouts an actor. And only once: refId is set on success,
+    ; spawnFailed on an unsupported race, and either stops this retrying every
+    ; sweep.
+    ;
+    ; TAKING THE ITEM IS THE OTHER WAY TO BECOME RESPONSIBLE, and the two gates
+    ; disagreed. CheckBabyItem has no `owned` check - it confiscates from any
+    ; roster child still small enough for FMR's clock to matter - while this
+    ; spawned only for `owned`. A child could therefore have FMR's clock
+    ; cleared without the birth being claimed, and then neither mod would ever
+    ; give it a body: FMR because we stopped its timer, us because we never
+    ; claimed it. Whoever ends the other mod's childhood owes the child a body.
+    ;
+    ; babyTaken == 1 means WE CLEARED THE CLOCK. It does not mean 2, which is
+    ; "there was nothing to take" and carries no such debt - most of the
+    ; roster holds a 2 for exactly that reason, and none of them should grow an
+    ; actor from it.
     If want >= 2 && akKid == None \
-            && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".owned", 0) == 1 \
+            && (JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".owned", 0) == 1 \
+                || JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".babyTaken", 0) == 1) \
             && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0) == 0 \
             && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".spawnFailed", 0) == 0 \
             && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".needsName", 0) == 0
@@ -4545,6 +5622,10 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
         ; bite here, because that array holds summoned ADULTS and every adult
         ; resolves to 1.0. Two children sharing a reference would agree.
         ApplyStageScale(aiIdx, akKid, want)
+        ; Keep the panel's Home column current. Costs one native read per
+        ; embodied child per sweep and writes only when the answer changes.
+        NoteHome(aiIdx, akKid)
+        WatchDisplacement(aiIdx, akKid)
     EndIf
 EndFunction
 

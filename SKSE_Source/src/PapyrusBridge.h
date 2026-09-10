@@ -54,6 +54,26 @@ namespace Kinship::PapyrusBridge {
     // SetChildStageStatic for why the floor and the base stamp both move.
     bool SetChildStage(const std::string& aChildName, std::int32_t aStage);
 
+    // EXPERIMENT: set Variable07 (Hearthfire's house number) and make the
+    // child's own AI package move them. Answers whether the vanilla child AI
+    // reads it, which decides whether the fix is a line of code or a Package
+    // record in the plugin.
+    bool TryHomePackage(const std::string& aChildName);
+
+    // Moves a child to the home it is already recorded as living in.
+    bool SendChildHome(const std::string& aChildName);
+
+    // Same, for every embodied child at once. For rosters placed before homes
+    // were being assigned - they stand wherever the player was at the time.
+    bool SendAllChildrenHome();
+
+    // Brings a child that already has an actor to the player.
+    //
+    // MoveTo on the reference we recorded, never PlaceAtMe: the console route
+    // spawns a SECOND actor from the same base and the roster is keyed by name,
+    // so two children of one name make every later lookup ambiguous.
+    bool SummonChild(const std::string& aChildName);
+
     // Gives a recorded child an actor in the world.
     //
     // For children Fertility Mode named and then did nothing with - never sent

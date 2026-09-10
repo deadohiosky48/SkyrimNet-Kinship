@@ -123,6 +123,50 @@ namespace Kinship::PapyrusBridge {
         return vm->DispatchStaticCall(kScript, "RenameChildStatic", args, callback);
     }
 
+    bool TryHomePackage(const std::string& aChildName) {
+        auto* vm = VM();
+        if (!vm || aChildName.empty()) {
+            return false;
+        }
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(new NullCallback());
+        auto args = RE::MakeFunctionArguments(std::string(aChildName));
+
+        return vm->DispatchStaticCall(kScript, "TryHomePackageStatic", args, callback);
+    }
+
+    bool SendChildHome(const std::string& aChildName) {
+        auto* vm = VM();
+        if (!vm || aChildName.empty()) {
+            return false;
+        }
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(new NullCallback());
+        auto args = RE::MakeFunctionArguments(std::string(aChildName));
+
+        return vm->DispatchStaticCall(kScript, "SendChildHomeStatic", args, callback);
+    }
+
+    bool SendAllChildrenHome() {
+        auto* vm = VM();
+        if (!vm) {
+            return false;
+        }
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(new NullCallback());
+        auto args = RE::MakeFunctionArguments();
+
+        return vm->DispatchStaticCall(kScript, "SendAllChildrenHomeStatic", args, callback);
+    }
+
+    bool SummonChild(const std::string& aChildName) {
+        auto* vm = VM();
+        if (!vm || aChildName.empty()) {
+            return false;
+        }
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(new NullCallback());
+        auto args = RE::MakeFunctionArguments(std::string(aChildName));
+
+        return vm->DispatchStaticCall(kScript, "SummonChildStatic", args, callback);
+    }
+
     bool SpawnChildBody(const std::string& aChildName) {
         auto* vm = VM();
         if (!vm || aChildName.empty()) {

@@ -1,6 +1,7 @@
 #include "PCH.h"
 
 #include "src/KinshipPanel.h"
+#include "src/Natives.h"
 #include "src/Store.h"
 
 namespace {
@@ -34,6 +35,12 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     SKSE::Init(a_skse);
 
     SKSE::log::info("SkyrimNet Kinship plugin loading");
+
+    // Papyrus natives, registered before the messaging listener so the VM has
+    // them the moment scripts run. Failure here is not fatal - SNKin_Bridge
+    // verifies the effect of every native call and degrades when it did not
+    // happen, so a missing registration costs the home anchor and nothing else.
+    Kinship::Natives::Register(SKSE::GetPapyrusInterface());
 
     // THIS DLL IS ENTIRELY OPTIONAL. The mod is fully functional without it -
     // the Papyrus half owns every piece of logic, and the in-game picker

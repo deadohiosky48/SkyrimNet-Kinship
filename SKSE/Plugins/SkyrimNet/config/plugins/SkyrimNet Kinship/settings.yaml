@@ -82,6 +82,7 @@ kinStageConfiscate: false
 # depending on JContainers for one lookup. The per-race lists are ours - FMR
 # dropped race-specific keys, as its own source comments.
 kinNameFromList: false
+
 # Size. One child body serves every age in Skyrim, so toddler, child and
 # adolescent look identical - scale is the only way to separate them without
 # new assets, and it works here ONLY because the mesh being scaled is already a

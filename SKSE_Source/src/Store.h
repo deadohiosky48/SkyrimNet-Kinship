@@ -27,6 +27,18 @@ namespace Kinship::Store {
         bool hidden = false;          // tombstoned: kept for index stability, not shown
         int stage = -1;              // 0 newborn .. 5 adult; -1 = stages off or not yet computed
         bool hasBody = false;        // a live actor reference is recorded for this child
+        // The actual reference. Papyrus has no unsigned type, so a 0xFF dynamic
+        // form id arrives here negative - mask to 32 bits before looking it up.
+        std::int32_t refId = 0;
+        // This mod is responsible for giving this child a body and will do it
+        // on its own at toddler. False means Fertility Mode named the child and
+        // then left it as a record - the panel is the only way it ever exists.
+        // The distinction is the whole content of the "Give a body" tooltip.
+        bool owned = false;
+        // Where this child lives, copied out of SeverActions' co-save by the
+        // Papyrus side - the panel cannot read that itself. Empty means no home
+        // is recorded, which is the case worth showing rather than hiding.
+        std::string home;
 
         // Populated only when a birth could not be attributed. Both vectors are
         // index-aligned and may contain duplicate names - see the Papyrus side,

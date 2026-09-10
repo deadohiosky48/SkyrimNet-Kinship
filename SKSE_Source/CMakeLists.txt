@@ -67,6 +67,8 @@ find_package(spdlog CONFIG REQUIRED)
 
 set(SOURCES
     plugin.cpp
+    src/Diagnostics.cpp
+    src/Natives.cpp
     src/KinshipPanel.cpp
     src/PapyrusBridge.cpp
     src/Store.cpp
