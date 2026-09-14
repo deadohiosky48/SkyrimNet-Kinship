@@ -1,7 +1,6 @@
 #include "KinshipPanel.h"
 
 #include "PCH.h"
-#include "Diagnostics.h"
 #include "PapyrusBridge.h"
 #include "Store.h"
 
@@ -236,10 +235,13 @@ namespace Kinship::Panel {
         char g_editName[64] = "";   // the child's name, editable in the row
         // Row index awaiting a second click before a body is spawned. -1 = none.
         int g_spawnConfirm = -1;
+        // Two-step guard for Forget, held per row. Separate from the others so
+        // an open confirmation on one action cannot be answered by clicking a
+        // different one.
+        int g_forgetConfirm = -1;
         // Two-step guard for the bulk move. Separate from g_spawnConfirm, which
         // is per-row and holds a child index rather than a flag.
         bool g_sendAllConfirm = false;
-        std::string g_diagResult;
 
         // 0..5, matching SNKin_Bridge.StageName. Kept here rather than derived
         // so the panel cannot drift out of step with the Papyrus names.
@@ -405,9 +407,15 @@ namespace Kinship::Panel {
         void DrawTable() {
             constexpr auto flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
-            if (!ImGui::BeginTable("kinship", 7, flags, ImVec2(0.0f, 420.0f))) {
+            if (!ImGui::BeginTable("kinship", 8, flags, ImVec2(0.0f, 420.0f))) {
                 return;
             }
+            // THE ROSTER INDEX, SHOWN. It is the record's real key - Forget
+            // acts on it, the log prints it, and two rows can legitimately
+            // carry the same name, at which point the number is the only thing
+            // that tells them apart. Narrow and fixed so it never competes with
+            // the name for width.
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 34.0f);
             ImGui::TableSetupColumn("Child");
             ImGui::TableSetupColumn("Relation");
             ImGui::TableSetupColumn("Mother");
@@ -426,6 +434,9 @@ namespace Kinship::Panel {
                 ImGui::PushID(c.index);
                 ImGui::TableNextRow();
 
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%d", c.index);
+
                 // THE ONE FIELD THAT HAD NO EDITOR until a child arrived that
                 // the naming prompt had missed - "(unnamed 11)", with mother,
                 // father and stage all correctable and the name not.
@@ -433,6 +444,32 @@ namespace Kinship::Panel {
                 if (editing) {
                     ImGui::SetNextItemWidth(-FLT_MIN);
                     ImGui::InputText("##name", g_editName, sizeof(g_editName));
+                } else if (c.needsName) {
+                    // A CLAIMED BIRTH WAITING FOR ITS PROMPT, not a failure.
+                    //
+                    // The naming box does not open during combat, a menu or an
+                    // OStim scene, so a record can legitimately sit here with a
+                    // placeholder name and only half its fields written. That
+                    // state got reported as a bug twice, both times correctly
+                    // observed and both times working as designed - because
+                    // nothing on screen said it was a queue.
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.3f, 1.0f));
+                    ImGui::TextUnformatted("awaiting name");
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                        ImGui::Text(
+                            "This birth is recorded as %s and is waiting to be named.\n\n"
+                            "The prompt opens as soon as you are out of combat, out of "
+                            "menus and not in a scene - it will not interrupt any of "
+                            "those. Until then the record is still being filled in, so "
+                            "the stage and home may be blank.\n\n"
+                            "You can also just name them here with Edit.",
+                            c.name.c_str());
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
                 } else {
                     ImGui::Text("%s", c.name.c_str());
                 }
@@ -595,38 +632,11 @@ namespace Kinship::Panel {
                             PapyrusBridge::SendChildHome(c.name);
                             NoteWrite();
                         }
-                        // EXPERIMENT, and labelled as one. Only offered where it
-                        // can actually be answered: Variable07 can name eight
-                        // player houses and nothing else, so a child living in
-                        // the Blue Palace has no integer and the button would
-                        // only ever report that.
-                        if (!c.home.empty()) {
-                            ImGui::SameLine();
-                            if (ImGui::SmallButton("Var07?")) {
-                                PapyrusBridge::TryHomePackage(c.name);
-                                NoteWrite();
-                            }
-                            if (ImGui::IsItemHovered()) {
-                                ImGui::BeginTooltip();
-                                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
-                                ImGui::TextUnformatted(
-                                    "Test: tell this child's own AI package where they "
-                                    "live, then ask the package to move them.\n\n"
-                                    "These actors are built from Fertility Mode's child "
-                                    "bases, which carry the vanilla child AI. That AI "
-                                    "reads a house number from Variable07, and with none "
-                                    "set it falls back to one marker shared by every "
-                                    "child - which is what drags them back after a long "
-                                    "sleep.\n\n"
-                                    "Watch the log. If they end up inside the house named "
-                                    "in the Home column, the package reads it and that is "
-                                    "the fix. If they end up anywhere else, it does not, "
-                                    "and we need our own package.\n\n"
-                                    "Only works for the eight Hearthfire player homes.");
-                                ImGui::PopTextWrapPos();
-                                ImGui::EndTooltip();
-                            }
-                        }
+                        // IMMEDIATELY AFTER ITS OWN BUTTON. IsItemHovered reads
+                        // the LAST SUBMITTED item, and this tooltip used to sit
+                        // below the Var07 experiment - so it described "Send
+                        // home" while hovering over a different button entirely.
+                        // Third time this file has made that mistake.
                         if (ImGui::IsItemHovered()) {
                             ImGui::BeginTooltip();
                             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
@@ -637,6 +647,39 @@ namespace Kinship::Panel {
                                 "A child is placed wherever you were standing when it "
                                 "got a body, and nothing has ever moved it since. This "
                                 "puts it where it belongs without escorting it there.");
+                            ImGui::PopTextWrapPos();
+                            ImGui::EndTooltip();
+                        }
+                        // SET HOME HERE.
+                        //
+                        // Offered on every child with a body, not only the
+                        // homeless ones: correcting a home is as ordinary as
+                        // setting one, and a player who has walked somewhere to
+                        // say "here" should not have to clear the old value
+                        // first.
+                        //
+                        // This is also the ONLY route to a home for a player
+                        // without SeverActions, which is where every other home
+                        // in this mod comes from.
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Set home here")) {
+                            PapyrusBridge::SetHomeHere(c.name);
+                            NoteWrite();
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::BeginTooltip();
+                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+                            ImGui::TextUnformatted(
+                                "Record where you are standing right now as this "
+                                "child's home, and send them there.\n\n"
+                                "Stand inside the room you want them to live in. "
+                                "A home is ultimately a marker, and one can only "
+                                "be placed in a cell that is loaded - which is why "
+                                "you have to be there, and why SeverActions asks "
+                                "the same.\n\n"
+                                "A home set this way is kept: the usual sweep stops "
+                                "overwriting it from SeverActions, and it works with "
+                                "SeverActions not installed at all.");
                             ImGui::PopTextWrapPos();
                             ImGui::EndTooltip();
                         }
@@ -703,6 +746,49 @@ namespace Kinship::Panel {
                             }
                         }
                     }
+
+                    // FORGET. Tombstones the row: hidden here, unlinked from
+                    // both parents, no longer the player's child to anything
+                    // that reads the store.
+                    //
+                    // BY INDEX. Two rows can carry the same name - a save
+                    // loaded from before a birth, then the birth again, leaves
+                    // one record per timeline - and every by-name lookup
+                    // returns the first, so a by-name Forget would hide the
+                    // wrong row whenever it mattered most.
+                    ImGui::SameLine();
+                    if (g_forgetConfirm == c.index) {
+                        if (ImGui::SmallButton("Really? Forget")) {
+                            PapyrusBridge::ForgetChildAt(c.index);
+                            g_forgetConfirm = -1;
+                            NoteWrite();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("No##forget")) {
+                            g_forgetConfirm = -1;
+                        }
+                    } else {
+                        if (ImGui::SmallButton("Forget")) {
+                            g_forgetConfirm = c.index;
+                        }
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::BeginTooltip();
+                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                            ImGui::TextUnformatted(
+                                "Removes this record from the family: hidden here, dropped "
+                                "from both parents' bios, and no longer counted as the "
+                                "player's child.\n\n"
+                                "For records that belong to a different playthrough. The "
+                                "store is one file per install rather than per save, so "
+                                "loading an older save and letting a birth happen again "
+                                "leaves two records for one child - and they can share a "
+                                "name, which is why this acts on the row rather than the "
+                                "name.\n\n"
+                                "The slot is kept, so nothing else shifts. Reversible.");
+                            ImGui::PopTextWrapPos();
+                            ImGui::EndTooltip();
+                        }
+                    }
                 }
                 ImGui::PopID();
             }
@@ -747,20 +833,6 @@ namespace Kinship::Panel {
         ImGui::SameLine();
         if (ImGui::Button("Refresh")) {
             Store::Reload();
-        }
-        // DIAGNOSTIC. Asks the engine which AI package is actually running on
-        // every child that has a body, and writes it to SkyrimNetKinship.log.
-        // Five theories about what keeps dragging them to Whiterun were tested
-        // from the outside and all five were wrong; this stops guessing.
-        //
-        // Comes out before release along with the displacement watcher.
-        ImGui::SameLine();
-        if (ImGui::Button("Diagnose")) {
-            g_diagResult = Diagnostics::DumpPackages();
-        }
-        if (!g_diagResult.empty()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", g_diagResult.c_str());
         }
         // SEND EVERYONE HOME AT ONCE.
         //

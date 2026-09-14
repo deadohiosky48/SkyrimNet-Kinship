@@ -54,11 +54,11 @@ namespace Kinship::PapyrusBridge {
     // SetChildStageStatic for why the floor and the base stamp both move.
     bool SetChildStage(const std::string& aChildName, std::int32_t aStage);
 
-    // EXPERIMENT: set Variable07 (Hearthfire's house number) and make the
-    // child's own AI package move them. Answers whether the vanilla child AI
-    // reads it, which decides whether the fix is a line of code or a Package
-    // record in the plugin.
-    bool TryHomePackage(const std::string& aChildName);
+    // Records the player's current position as this child's home.
+    //
+    // The only way a home exists at all without SeverActions, which is where
+    // every other home in this mod comes from.
+    bool SetHomeHere(const std::string& aChildName);
 
     // Moves a child to the home it is already recorded as living in.
     bool SendChildHome(const std::string& aChildName);
@@ -80,6 +80,18 @@ namespace Kinship::PapyrusBridge {
     // to training, never adopted, so a record with no body and no way to get
     // one. Refused for newborns and infants, which have no body by design.
     bool SpawnChildBody(const std::string& aChildName);
+
+    // Tombstones a roster row: hidden from the panel, unlinked from both
+    // parents, and no longer the player's child as far as anything reads.
+    //
+    // BY INDEX, NOT BY NAME, and that is the whole point of it existing. The
+    // roster can hold the same name twice - load a save from before a birth,
+    // let it happen again, and there are two "Fastred's daughter" records, one
+    // per timeline. Every by-name lookup returns the first, so a by-name
+    // Forget aims at whichever came earlier no matter which row was clicked.
+    //
+    // Reversible on the Papyrus side; the record and its index survive.
+    bool ForgetChildAt(std::int32_t aIndex);
 
     // True when the Papyrus VM is up and SNKin_Bridge is loaded. The panel
     // shows itself read-only rather than offering buttons that silently do

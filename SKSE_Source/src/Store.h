@@ -35,6 +35,12 @@ namespace Kinship::Store {
         // then left it as a record - the panel is the only way it ever exists.
         // The distinction is the whole content of the "Give a body" tooltip.
         bool owned = false;
+        // The naming prompt has not been answered yet, so `name` is a
+        // placeholder like "(unnamed 13)" and the record is still being filled
+        // in. Shown in the panel, because a half-built record is otherwise
+        // indistinguishable from a broken one - which it was mistaken for
+        // twice before this field existed.
+        bool needsName = false;
         // Where this child lives, copied out of SeverActions' co-save by the
         // Papyrus side - the panel cannot read that itself. Empty means no home
         // is recorded, which is the case worth showing rather than hiding.

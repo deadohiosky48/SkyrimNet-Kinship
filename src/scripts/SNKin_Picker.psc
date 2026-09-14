@@ -53,9 +53,19 @@ String Function AskChildNameFromList(String asWord, String asMother, String[] as
       does in its VR path.
 
       FALLS BACK TO TYPING rather than failing. An empty pool means the names
-      file is missing or the race key found nothing, and being asked to type is
-      a far better outcome than a menu with no rows in it. }
-    If asNames == None || asNames.Length == 0
+      file is missing or every name in it is already taken, and being asked to
+      type is a far better outcome than a menu with no rows in it.
+
+      THE LIST ARRIVES PRE-FILTERED. NamePool removes names already on the
+      roster, so the uniqueness check below should never fire; it is kept as a
+      guard rather than as the mechanism, because a name reaching the roster
+      between the pool being built and the box being answered is possible in
+      principle and unfindable in practice if it lands. }
+    ; LENGTH ONLY - NEVER "== None". Papyrus has no None array: comparing one
+    ; raises "Cannot cast from None to String[]" at runtime, which compiles
+    ; clean and appears nowhere but Papyrus.0.log. The caller now checks a count
+    ; before it ever asks for this array, so what arrives here is always real.
+    If asNames.Length == 0
         Return AskChildName(asWord, asMother)
     EndIf
     UILIB_1 provider = Lib()
@@ -72,8 +82,8 @@ String Function AskChildNameFromList(String asWord, String asMother, String[] as
     EndIf
     String chosen = asNames[pick]
     ; SAME UNIQUENESS RULE AS TYPING. The roster is keyed by name, so a repeat
-    ; would be unfindable - and with a shared pool of 150 names a collision is
-    ; likely rather than exotic once a family gets large.
+    ; would be unfindable. Unreachable while the pool is filtered upstream -
+    ; see the docstring.
     If JsonUtil.StringListFind(SNKin_Bridge.StoreFile(), "roster", chosen) >= 0
         Say("There is already a " + chosen + " in the family - pick another.")
         Return ""

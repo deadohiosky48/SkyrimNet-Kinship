@@ -71,6 +71,53 @@ foreach ($f in Get-ChildItem $src -Filter 'SNKin_*.psc' -File) {
 
     if ($text -match '(?m)^\s*Continue\s*$') { Bad "$($f.Name): Papyrus has no Continue statement" }
 
+    # A JsonUtil path is resolved against StorageUtilData and nothing else, so
+    # a "../" in one points at a file that is not there. It does not throw: the
+    # read returns zero entries, and a caller that treats "no data" as a reason
+    # to fall back does so forever.
+    #
+    # THIS IS NOT HYPOTHETICAL. NamesFile() returned "../SNKin_Names" from 1.5.0
+    # and the name-list feature was dead the whole time, because its failure
+    # mode - offer a text box instead - is identical to the feature being
+    # switched off. Two months and one live birth to notice.
+    # DOCSTRINGS STRIPPED FIRST, or the comment above NamesFile() explaining
+    # this very bug would trip the guard that exists because of it. Safe to
+    # match with '\{[^}]*\}' precisely because the next check forbids a brace
+    # inside a docstring.
+    # PAPYRUS HAS NO None ARRAY. `Return None` from a function declared to
+    # return an array type compiles clean and fails at RUNTIME with
+    # "Cannot cast from None to String[]" - visible only in Papyrus.0.log,
+    # which this mod does not read. Everything downstream then operates on a
+    # value that is not an array.
+    #
+    # COST TWO BUILDS AND TWO LIVE BIRTHS. NamePool used None as "no list
+    # here"; 305 names arrived as nothing and the naming prompt silently fell
+    # back to a text box. The fix that followed tested `== None`, which is the
+    # same mistake, so it could not have worked either.
+    #
+    # Return a count and fetch the array separately, or return a real empty
+    # array. Reading an array PROPERTY that is None is a different thing and
+    # stays legal - this only looks at what a function hands back.
+    $noneArray = 0
+    $fnArray = $false
+    $ln2 = 0
+    foreach ($line in ($text -split "`r?`n")) {
+        $ln2++
+        if ($line -match '(?i)^\s*[A-Za-z_]+\[\]\s+Function\s') { $fnArray = $true }
+        elseif ($line -match '(?i)^\s*(Function|Event)\s|^\s*[A-Za-z_]+\s+Function\s') { $fnArray = $false }
+        if ($fnArray -and $line -match '(?i)^\s*Return\s+None\s*$') {
+            Bad "$($f.Name):${ln2}: 'Return None' from an array-returning function - Papyrus has no None array; it fails at runtime, not build"
+            $noneArray++
+        }
+    }
+    if ($noneArray -eq 0) { Good "$($f.Name): no None returned as an array" }
+
+    $code = [regex]::Replace($text, '\{[^}]*\}', '')
+    $upPaths = [regex]::Matches($code, '"[^"]*\.\./[^"]*"')
+    if ($upPaths.Count -gt 0) {
+        Bad "$($f.Name): $($upPaths.Count) path literal(s) containing '../' - JsonUtil resolves against StorageUtilData only: $(($upPaths | ForEach-Object { $_.Value }) -join ', ')"
+    } else { Good "$($f.Name): no '../' in path literals" }
+
     # A literal opening brace INSIDE a { } docstring closes it, and everything
     # after is then parsed as code - which fails somewhere further down with a
     # message pointing at the wrong line entirely. Writing a JSON example in a

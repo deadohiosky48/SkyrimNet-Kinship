@@ -37,6 +37,30 @@ match source. It compiles cleanly and reports success.
 
 > If CK cannot find `SNKin_Bridge` in the script list at Step 3, this is why.
 
+### The five `.psc` files you have to supply yourself
+
+`tools\build.ps1` compiles against five scripts that belong to other mods.
+None is redistributable, so none is in the repo — `.gitignore` refuses them by
+name. Copy each into `src\scripts\` from the mod that owns it:
+
+| File | From | Used for |
+|---|---|---|
+| `SkyrimNetApi.psc` | SkyrimNet | config reads, decorator registration |
+| `_JSW_BB_Storage.psc` | Fertility Mode Reloaded | the birth and child arrays |
+| `UILIB_1.psc` | SkyUILib, shipped inside Fertility Mode Reloaded | the name box and the name list |
+| `SeverActionsNative.psc` | SeverActions | `Native_GetHome` / `Native_SetHome` |
+| `OThread.psc` | OStim NG | `GetThreadCount`, to know a scene is running |
+
+All five are **compile-time only**. Each call site is guarded at runtime by a
+plugin-presence check, so the mod runs with none of SeverActions, OStim or
+Beeing Female installed — but the compiler still needs the type to build the
+guarded branch.
+
+Every one of these also ships inside its own mod's `Data\Scripts\Source`,
+which is already on the compiler's import path. Copying them into
+`src\scripts\` is belt-and-braces for a machine that has the mod's scripts
+but not its sources.
+
 ---
 
 ## Step 1 — new plugin

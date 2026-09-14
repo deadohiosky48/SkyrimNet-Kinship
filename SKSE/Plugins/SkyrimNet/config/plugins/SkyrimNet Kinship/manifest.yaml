@@ -1,6 +1,6 @@
 plugin:
   name: "SkyrimNet Kinship"
-  version: "1.6.6"
+  version: "1.8.0"
   description: "Makes parentage permanent and visible to SkyrimNet — a child knows who its parents are, and a mother never forgets the child she bore. Works with Fertility Mode Reloaded, Fertility Mode v3 and Beeing Female NG."
   icon: "🍼"
 
@@ -120,7 +120,7 @@ schema:
     - name: "Pick Names From A List"
       path: "kinNameFromList"
       type: "bool"
-      description: "When this mod names a newborn, offer a list of names to choose from instead of a text field. Off by default, which asks you to type. The list is race-aware where a list exists for the mother's race and falls back to a general pool of 300 otherwise. Names live in Data/SKSE/Plugins/StorageUtilData/SNKin_Names.json and can be edited or extended freely - the general pools are seeded from Fertility Mode's own list, and the per-race lists are additions this mod ships. A name already used by one of your children is refused either way, because the family roster is keyed by name."
+      description: "When this mod names a newborn, offer a list of names to choose from instead of a text field. Off by default, which asks you to type. The list holds EVERY name in the file - about 300 - ordered rather than filtered: the mother's race first, then the father's when it differs, then the general pool, then every other race. A race is a sensible default to put at the top, not a rule about what you may call your own child. Names already used by one of your children are left out of the list entirely, because the family roster is keyed by name and a repeat could not be stored. Names live in Data/SKSE/Plugins/StorageUtilData/SNKin_Names.json and can be edited or extended freely - the general pools are seeded from Fertility Mode's own list, the per-race lists are additions this mod ships, and a list you add yourself appears automatically as long as it is keyed <race>.male or <race>.female."
       defaultValue: false
       category: "Life Stages"
 

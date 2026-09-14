@@ -30,6 +30,8 @@
 #   UILIB_1.psc           SkyUILib, shipped with Fertility Mode Reloaded
 #   SKSEMenuFramework.h   SKSE Menu Framework
 #   SeverActionsNative.psc  SeverActions - for Native_GetHome/Native_SetHome only
+#   OThread.psc             OStim NG - for GetThreadCount only, to know when a
+#                           scene is running so no modal box opens during one
 #
 # docs/BUILD_DLL.md tells a builder where to get each one. That is a slightly
 # worse first-build experience and a much better licensing position.
@@ -38,6 +40,7 @@
 /src/scripts/_JSW_BB_Storage.psc
 /src/scripts/UILIB_1.psc
 /src/scripts/SeverActionsNative.psc
+/src/scripts/OThread.psc
 /SKSE_Source/include/SKSEMenuFramework.h
 
 # Compiled Papyrus. Rebuilt by tools/build.ps1 from src/scripts, and shipped

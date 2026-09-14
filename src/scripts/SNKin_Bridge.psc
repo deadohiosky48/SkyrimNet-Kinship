@@ -181,7 +181,6 @@ Function Bootstrap(Bool abForce = False)
     RegisterForSingleUpdateGameTime(PollHours())
     Diag(LOG_INFO(), "Bridge ready. FMR storage resolved. Watch armed (" + PollHours() + "h).")
 
-
     ; EVERY LOAD, not just the first run. This was inside the one-shot seed
     ; pass and that was wrong: a mother already carrying the player's baby when
     ; the session starts is not a first-install condition, it is the ordinary
@@ -2409,6 +2408,29 @@ Bool Function ForgetChild(String asChildName)
     Return ForgetChildStatic(asChildName)
 EndFunction
 
+Bool Function ForgetChildAtStatic(Int aiIndex) Global
+    { Hides a roster entry BY INDEX, which is the only unambiguous way to name
+      one.
+
+      EVERY OTHER ENTRY POINT RESOLVES BY NAME, and the roster can legitimately
+      hold the same name twice. Loading a save from before a birth and letting
+      it happen again leaves two records called "Fastred's daughter" - both
+      real, one belonging to a timeline that no longer exists - and
+      StringListFind returns the FIRST, so by-name Forget and by-name rename
+      both aim at whichever came earlier regardless of which the player meant.
+
+      The panel already knows the index of the row the player clicked. Passing
+      it through, rather than the display name, removes the ambiguity instead
+      of asking the player to work around it. }
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    If aiIndex < 0 || aiIndex >= n
+        Diag(LOG_ERROR(), "ForgetChildAt: index " + aiIndex + " is not on the roster.")
+        Return False
+    EndIf
+    Return ForgetAtIndex(aiIndex, JsonUtil.GetStringValue(StoreFile(), \
+        "child." + aiIndex + ".name", "child." + aiIndex))
+EndFunction
+
 Bool Function ForgetChildStatic(String asChildName) Global
     { Hides a roster entry that should not be there.
 
@@ -2431,15 +2453,21 @@ Bool Function ForgetChildStatic(String asChildName) Global
         Diag(LOG_ERROR(), "ForgetChild: no child named '" + asChildName + "' on the roster.")
         Return False
     EndIf
-    Int mId = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".motherId", 0)
+    Return ForgetAtIndex(idx, asChildName)
+EndFunction
+
+Bool Function ForgetAtIndex(Int aiIndex, String asLabel) Global
+    { The tombstone itself. Both Forget entry points end here, so the by-name
+      and by-index routes cannot drift apart. asLabel is for the log only. }
+    Int mId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIndex + ".motherId", 0)
     If mId != 0
-        JsonUtil.IntListRemove(StoreFile(), ParentPath(mId), idx, True)
+        JsonUtil.IntListRemove(StoreFile(), ParentPath(mId), aiIndex, True)
     EndIf
-    Int fId = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".fatherId", 0)
+    Int fId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIndex + ".fatherId", 0)
     If fId != 0
-        JsonUtil.IntListRemove(StoreFile(), ParentPath(fId), idx, True)
+        JsonUtil.IntListRemove(StoreFile(), ParentPath(fId), aiIndex, True)
     EndIf
-    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".hidden", 1)
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIndex + ".hidden", 1)
     JsonUtil.Save(StoreFile())
 
     ; Republish immediately rather than waiting for the next sweep. A hidden
@@ -2448,7 +2476,7 @@ Bool Function ForgetChildStatic(String asChildName) Global
     ; reading a stale 1 would keep blocking, which is at least safe, but a stale
     ; count feeds a disposition and would simply be wrong.
     Actor kid = Game.GetFormEx(JsonUtil.GetIntValue(StoreFile(), \
-        "child." + idx + ".refId", 0)) as Actor
+        "child." + aiIndex + ".refId", 0)) as Actor
     If kid != None
         StorageUtil.SetIntValue(kid, "SNKin_IsPlayerChild", 0)
     EndIf
@@ -2456,7 +2484,8 @@ Bool Function ForgetChildStatic(String asChildName) Global
     RefreshParentCount(fId)
     RefreshChildTotal()
 
-    Diag(LOG_INFO(), "ForgetChild: " + asChildName + " hidden and unlinked from both parents.")
+    Diag(LOG_INFO(), "ForgetChild: " + asLabel + " (row " + aiIndex + \
+        ") hidden and unlinked from both parents.")
     Return True
 EndFunction
 
@@ -3426,9 +3455,33 @@ Function ClaimFmrBirth(Actor akMother, String asFather, Int aiFatherId) Global
     Diag(LOG_WARN(), "Claimed the birth of " + mumName + "'s " + word + \
         " (birth group " + grp + "). This mod is running this childhood; " + \
         "Fertility Mode will not mature the child on its own timer.")
-    If Notify()
+
+    ; THE TOAST WAITS OUT A SCENE, it is not cancelled by one. A birth notice
+    ; arriving mid-scene was reported as alarming rather than informative - the
+    ; player could not tell whether it had disrupted anything. Held as a flag on
+    ; the record and shown by PromptPendingNames, which already waits for the
+    ; same conditions, so the news and the question arrive together.
+    If SceneActive()
+        JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".birthToast", 1)
+        JsonUtil.Save(StoreFile())
+    ElseIf Notify()
         Debug.Notification("[Kinship] " + mumName + " has given birth")
     EndIf
+
+    ; ASK NOW IF THE PLAYER IS FREE, rather than waiting for the next sweep.
+    ;
+    ; The sweep is up to kinPollHours behind, and worse, the delay is invisible:
+    ; a claim landing after Sweep had already passed PromptPendingNames left a
+    ; record in the panel with a placeholder name and half its fields for a full
+    ; game hour. That was reported as a bug twice, and it was not one - the
+    ; queue was working exactly as designed and looked broken both times.
+    ;
+    ; EVERY GUARD STILL APPLIES. This runs on the labour event, wherever the
+    ; mother happens to be, so PromptPendingNames' own checks - menu, combat,
+    ; OStim scene, and the naming lock - are what make calling it from here
+    ; safe. When any of them refuses, the sweep picks the child up later exactly
+    ; as it did before.
+    PromptPendingNames()
 EndFunction
 
 Int Function OwnedBirthFor(Int aiMotherId) Global
@@ -3671,8 +3724,18 @@ String Function NamesFile() Global
 
       So the pools are ours, seeded FROM FMR's 301 names as the fallback and
       extended with the race-specific lists it does not have. Anyone can add
-      more by editing the file; nothing here is compiled in. }
-    Return "../SNKin_Names"
+      more by editing the file; nothing here is compiled in.
+
+      NO LEADING "../". JsonUtil resolves every path against the
+      StorageUtilData folder, which is where this file ships and where
+      StoreFile() already points without a prefix. This read "../SNKin_Names"
+      from 1.5.0 until the first birth that actually used it: that resolves one
+      directory up, finds nothing, and every pool comes back empty - which the
+      caller
+      correctly treats as "offer a text field instead". The feature looked
+      switched off for two months because its failure mode is the behaviour of
+      being switched off. }
+    Return "SNKin_Names"
 EndFunction
 
 String Function RaceKey(Actor akWho) Global
@@ -3755,35 +3818,235 @@ String Function ToLower(String asText) Global
     Return out
 EndFunction
 
-String[] Function NamePool(String asRaceKey, Int aiSex) Global
-    { Names to offer, race-specific where a list exists and flat otherwise.
+String Function PoolScratch() Global
+    { Where the assembled name list is built.
 
-      A missing race list is not an error - most races will not have one, and
-      the fallback is a full 150-name pool rather than nothing. }
+      A SEPARATE FILE, AND NEVER SAVED. JsonUtil keeps a document in memory and
+      writes it only on Save(), which nothing here calls for this one - so the
+      scratch never reaches disk. Kept out of the parentage store anyway, so
+      that a stray Save somewhere else could not drop three hundred names into
+      the file the roster lives in. }
+    Return "SNKin_NamePool"
+EndFunction
+
+Int Function AddPoolInto(String asKey) Global
+    { Copies one of the names file's lists into the scratch, skipping names the
+      family already uses. Returns the scratch's size afterwards.
+
+      allowDuplicate = False IS THE DEDUPE. JsonUtil refuses a repeat, so the
+      eleven names that genuinely appear in both a race list and the general
+      pool land once, in whichever position they reached first - which is what
+      makes the priority ordering hold. }
+    Int n = JsonUtil.StringListCount(NamesFile(), asKey)
+    Int i = 0
+    While i < n
+        String nm = JsonUtil.StringListGet(NamesFile(), asKey, i)
+        If nm != "" && JsonUtil.StringListFind(StoreFile(), "roster", nm) < 0
+            JsonUtil.StringListAdd(PoolScratch(), "pool", nm, False)
+        EndIf
+        i += 1
+    EndWhile
+    Return JsonUtil.StringListCount(PoolScratch(), "pool")
+EndFunction
+
+Int Function BuildNamePool(String asMotherRace, String asFatherRace, Int aiSex) Global
+    { EVERY name, with the parents' races at the top.
+
+      RETURNS A COUNT AND FILLS THE SCRATCH, rather than returning the array.
+      That shape exists because of a Papyrus rule this code broke twice:
+
+          PAPYRUS HAS NO None ARRAY.
+
+      `Return None` from a String[] function, and `If someArray == None`, both
+      raise "Cannot cast from None to String[]" at RUNTIME and leave a value
+      that is not an array. It compiles silently - the compiler accepts both -
+      and the only trace is Papyrus.0.log, which this mod does not read. The
+      1.7.2 pool used None as "no list here" and every downstream merge then
+      operated on garbage; 305 names arrived as nothing. The 1.7.3 guards
+      tested `== None`, which is the same error, so they could never have
+      helped.
+
+      So no array is ever built, compared or returned here. JsonUtil assembles
+      the list in its own document and the caller asks for the array only once
+      it knows the count is above zero - at which point the array is real.
+
+      THE RACE LISTS FILTERED THE MENU AND THAT WAS WRONG. Offering only
+      "woodelf.female" meant sixteen choices out of three hundred and five, and
+      no way from inside the game to reach the rest - the player's child, the
+      player's decision, and a list that had already made it for them. A race
+      is a sensible DEFAULT to put first; it is not a rule about what a parent
+      may call their own child.
+
+      THE RACE LISTS FILTERED THE MENU AND THAT WAS WRONG. Offering only
+      "woodelf.female" meant sixteen choices out of three hundred and five, and
+      no way from inside the game to reach the rest - the player's child, the
+      player's decision, and a list that had already made it for them. A race
+      is a sensible DEFAULT to put first; it is not a rule about what a parent
+      may call their own child.
+
+      ORDER, NOT EXCLUSION: the mother's race, then the father's when it
+      differs, then the general pool, then every other race list. The first
+      sixteen entries are the ones most likely to be wanted and the remaining
+      two hundred and ninety are a scroll away.
+
+      DEDUPED, BECAUSE THE POOLS GENUINELY OVERLAP - measured, not assumed:
+      eleven names appear in both a race list and the general pool (Servius,
+      Tiberius, Frida, Junia and the rest). A list that repeats itself looks
+      broken.
+
+      NAMES ALREADY IN THE FAMILY NEVER ENTER. The roster is keyed by name, so
+      a repeat cannot be stored - and the picker used to discover that only
+      after the player had chosen, returning "" at a point where the caller
+      could not tell a duplicate pick from a declined box. The player got
+      "Haelga's son" for answering the question.
+
+      The tail keeps FILE ORDER rather than being alphabetised. Someone
+      scrolling this is browsing for a name they like, not looking up one they
+      already know, and the file groups names by culture - which is the more
+      useful grouping for browsing. Alphabetising would shuffle Nord, Imperial
+      and Breton names into each other for no gain. }
     String sex = "male"
     If aiSex == 1
         sex = "female"
     EndIf
-    Int n = 0
-    If asRaceKey != ""
-        n = JsonUtil.StringListCount(NamesFile(), asRaceKey + "." + sex)
+
+    JsonUtil.StringListClear(PoolScratch(), "pool")
+
+    Int size = AddPoolInto(asMotherRace + "." + sex)
+    Diag(LOG_DEBUG(), "NamePool: '" + asMotherRace + "." + sex + "' -> " + size)
+    If asFatherRace != "" && asFatherRace != asMotherRace
+        size = AddPoolInto(asFatherRace + "." + sex)
+        Diag(LOG_DEBUG(), "NamePool: +'" + asFatherRace + "." + sex + "' -> " + size)
     EndIf
-    ; NOT "key" - Key is a Skyrim form type, and naming a local after one fails
-    ; with "cannot name a variable the same as a known type". Same trap as Race,
-    ; Parent and Light, all of which this file already documents.
-    String poolKey = asRaceKey + "." + sex
-    If n <= 0
-        poolKey = sex
-        n = JsonUtil.StringListCount(NamesFile(), poolKey)
+    size = AddPoolInto(sex)
+    Diag(LOG_DEBUG(), "NamePool: +'" + sex + "' -> " + size)
+
+    ; EVERY remaining race list, so nothing in the file is unreachable. A list
+    ; added by a player - the file is explicitly theirs to extend - shows up
+    ; here without this function having to learn its name, as long as it is
+    ; keyed "<race>.<sex>" like the shipped ones.
+    String[] races = RaceKeys()
+    Int i = 0
+    While i < races.Length
+        If races[i] != asMotherRace && races[i] != asFatherRace
+            size = AddPoolInto(races[i] + "." + sex)
+        EndIf
+        i += 1
+    EndWhile
+    Diag(LOG_DEBUG(), "NamePool: +every other race -> " + size)
+
+    If size <= 0
+        ; SAID OUT LOUD, because the fallback is invisible. An empty pool sends
+        ; the caller to a text field, which is correct and is also exactly what
+        ; the player sees when the setting is off - so nothing in the game
+        ; separates "no names file" from "you did not ask for a list". The log
+        ; line is the only place that distinction can live.
+        Diag(LOG_WARN(), "No name pool in " + NamesFile() + " for '" + sex + \
+            "' or any race list - asking for a typed name instead. The file " + \
+            "belongs in StorageUtilData.")
     EndIf
-    If n <= 0
-        Return None
-    EndIf
-    Return JsonUtil.StringListToArray(NamesFile(), poolKey)
+    Return size
+EndFunction
+
+String[] Function NamePoolArray() Global
+    { The assembled list. ONLY call this when BuildNamePool returned above zero
+      - on an empty list JsonUtil has no array to hand back, and "no array" is
+      the exact thing Papyrus cannot represent. }
+    Return JsonUtil.StringListToArray(PoolScratch(), "pool")
+EndFunction
+
+String[] Function RaceKeys() Global
+    { The race keys the names file ships lists for.
+
+      A LITERAL LIST, and deliberately so: JsonUtil can count and read a list
+      it is handed a key for, but it cannot enumerate the keys in a file. The
+      alternative is a "races" index list inside the JSON, which is one more
+      thing that can disagree with the lists it names. Ten entries that change
+      about once never is the cheaper wrong-thing-to-maintain. }
+    String[] out = new String[10]
+    out[0] = "nord"
+    out[1] = "imperial"
+    out[2] = "redguard"
+    out[3] = "breton"
+    out[4] = "darkelf"
+    out[5] = "highelf"
+    out[6] = "woodelf"
+    out[7] = "orc"
+    out[8] = "argonian"
+    out[9] = "khajiit"
+    Return out
 EndFunction
 
 Bool Function NameFromList() Global
     Return SkyrimNetApi.GetConfigBool(CFG(), "kinNameFromList", False)
+EndFunction
+
+Bool Function HasOStim() Global
+    { OStim present, in either plugin form. OStim NG ships OStim.esp
+      ESL-FLAGGED, so GetModByName alone does not find it - measured on this
+      install, where the header carries 0x200. The same both-forms check
+      HasSeverActions uses, for the same reason. }
+    Return Game.GetModByName("OStim.esp") != 255 || \
+           Game.GetLightModByName("OStim.esp") != 255
+EndFunction
+
+Bool Function SceneActive() Global
+    { True while OStim is running any scene.
+
+      OThread.GetThreadCount() rather than a per-actor check: the question is
+      "is the player watching something they should not be interrupted during",
+      and that is true of a scene the player is merely near as much as one they
+      are in. Its own documentation says the count includes the player thread.
+
+      SOFT, LIKE EVERY OTHER OUTSIDE DEPENDENCY HERE. The plugin check runs
+      first and returns before OThread is named at all, so on an install with
+      no OStim this function never reaches a script that is not there. }
+    If !HasOStim()
+        Return False
+    EndIf
+    Return OThread.GetThreadCount() > 0
+EndFunction
+
+Bool Function CanAskNow() Global
+    { Whether the player is in a position to answer a modal box.
+
+      THREE WAYS TO BE BUSY, and the third was reported from a live session:
+      a birth toast arrived mid-scene and the player could not tell whether it
+      had disrupted anything. It had not - but a naming box there would have,
+      and either way the interruption is the problem. }
+    Return !Utility.IsInMenuMode() && !Game.GetPlayer().IsInCombat() && !SceneActive()
+EndFunction
+
+Bool Function TakeNameLock() Global
+    { One naming prompt at a time, across every caller.
+
+      NEEDED THE MOMENT THE CLAIM STARTED PROMPTING. PromptPendingNames used to
+      run only from Sweep, which already holds SNKin_SweepLock, so the sweep
+      lock was the naming lock by accident. ClaimFmrBirth calls it from the
+      LABOUR EVENT, which takes no such lock - so a birth landing while a sweep
+      was inside the prompt could put two modal boxes on screen at once, and
+      UILIB does not survive that.
+
+      TEN MINUTES of staleness escape, not the thirty seconds the sweep lock
+      uses. A held naming lock usually means a box is open and the player has
+      not answered yet, which is not a fault and may legitimately last a while;
+      thirty seconds would let a second box through on any thoughtful pause.
+      Papyrus has no try/finally, so the escape is the only thing that recovers
+      a holder that died mid-prompt - it just has to be longer than a person
+      takes to pick a name. }
+    Float now = Utility.GetCurrentRealTime()
+    Float held = StorageUtil.GetFloatValue(None, "SNKin_NameLock", 0.0)
+    ; held > now means the value came from a previous session: real time counts
+    ; from launch and resets, the same trap the sweep lock documents.
+    If held > 0.0 && held <= now && (now - held) < 600.0
+        Return False
+    EndIf
+    StorageUtil.SetFloatValue(None, "SNKin_NameLock", now)
+    Return True
+EndFunction
+
+Function ReleaseNameLock() Global
+    StorageUtil.SetFloatValue(None, "SNKin_NameLock", 0.0)
 EndFunction
 
 Function PromptPendingNames() Global
@@ -3797,11 +4060,18 @@ Function PromptPendingNames() Global
       "(unnamed 11)" with no visible reason, and before the poll was fixed the
       queue only advanced on a game load.
 
-      Still not during a fight or a menu. That part was right. }
+      CALLED FROM TWO PLACES NOW: the sweep, and the end of ClaimFmrBirth. The
+      second exists because the first is up to kinPollHours late - a birth
+      claimed just after the sweep passed this point left a half-built record
+      visible in the panel for a game hour, which reads as a failure rather
+      than as a queue. Hence the lock. }
     If !OwnsFmrBirth()
         Return
     EndIf
-    If Utility.IsInMenuMode() || Game.GetPlayer().IsInCombat()
+    If !CanAskNow()
+        Return
+    EndIf
+    If !TakeNameLock()
         Return
     EndIf
     Int n = JsonUtil.StringListCount(StoreFile(), "roster")
@@ -3810,15 +4080,34 @@ Function PromptPendingNames() Global
         If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".needsName", 0) == 1
             String word = JsonUtil.GetStringValue(StoreFile(), "child." + i + ".gender", "child")
             String mum = JsonUtil.GetStringValue(StoreFile(), "child." + i + ".mother", "")
+            ; THE BIRTH IS ANNOUNCED HERE WHEN IT COULD NOT BE ANNOUNCED THEN.
+            ; ClaimFmrBirth holds the toast back during a scene rather than
+            ; dropping it, because a suppressed notification the player never
+            ; receives is worse than a late one.
+            If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".birthToast", 0) == 1
+                If Notify()
+                    Debug.Notification("[Kinship] " + mum + " has given birth")
+                EndIf
+                JsonUtil.SetIntValue(StoreFile(), "child." + i + ".birthToast", 0)
+            EndIf
             String given = ""
+            ; THE COUNT DECIDES, NOT THE ARRAY. Asking for the array first and
+            ; testing it for emptiness is what put a None array into circulation
+            ; twice - see BuildNamePool. Nothing reads NamePoolArray() until the
+            ; count says there is something in it.
+            Int poolN = 0
             If NameFromList()
-                ; RACE FROM THE MOTHER, since the child has no actor yet - it is
-                ; being named before it has a body, which is the whole point of
-                ; owning the birth.
+                ; BOTH PARENTS' RACES, to order the list - it is no longer
+                ; filtered by either. Neither actor need be loaded; a race that
+                ; cannot be read just means that block does not come first.
                 Actor mother = Game.GetFormEx( \
                     JsonUtil.GetIntValue(StoreFile(), "child." + i + ".motherId", 0)) as Actor
-                given = SNKin_Picker.AskChildNameFromList(word, mum, \
-                    NamePool(RaceKey(mother), ChildSex(i)))
+                Actor father = Game.GetFormEx( \
+                    JsonUtil.GetIntValue(StoreFile(), "child." + i + ".fatherId", 0)) as Actor
+                poolN = BuildNamePool(RaceKey(mother), RaceKey(father), ChildSex(i))
+            EndIf
+            If poolN > 0
+                given = SNKin_Picker.AskChildNameFromList(word, mum, NamePoolArray())
             Else
                 given = SNKin_Picker.AskChildName(word, mum)
             EndIf
@@ -3834,6 +4123,7 @@ Function PromptPendingNames() Global
         EndIf
         i += 1
     EndWhile
+    ReleaseNameLock()
 EndFunction
 
 String Function GeneratedChildName(Int aiIdx, String asWord) Global
@@ -4239,206 +4529,6 @@ Function UnpinFromHome(Actor akKid) Global
     akKid.EvaluatePackage()
 EndFunction
 
-Int Function HouseIndexFor(String asHome) Global
-    { Hearthfire's house number for a home name, or 0 if it has none.
-
-      THESE EIGHT ARE THE WHOLE VOCABULARY of the vanilla child AI. Taken from
-      BYOHRelationshipAdoptionScript.TranslateHouseIntToInteriorLoc, which is
-      what actually reads Variable07 - so this list is not a guess, it is the
-      other side of the contract.
-
-      A HOME THAT IS NOT A PLAYER HOUSE CANNOT BE EXPRESSED. Several children
-      here live in the Blue Palace or Irgnir's House, and no integer says that.
-      If Variable07 turns out to work, that is the limit of how far it can be
-      taken and the rest still need a package of our own. }
-    String h = ToLower(asHome)
-    If h == "proudspire manor"
-        Return 1
-    ElseIf h == "hjerim"
-        Return 2
-    ElseIf h == "vlindrel hall"
-        Return 3
-    ElseIf h == "honeyside"
-        Return 4
-    ElseIf h == "breezehome"
-        Return 5
-    ElseIf h == "lakeview manor" || h == "falkreath house"
-        Return 6
-    ElseIf h == "windstad manor" || h == "winstad manor" || h == "hjaalmarch house"
-        Return 7
-    ElseIf h == "heljarchen hall" || h == "pale house"
-        Return 8
-    EndIf
-    Return 0
-EndFunction
-
-Bool Function TryHomePackageStatic(String asChildName) Global
-    { EXPERIMENT: make the child's own AI package take them home.
-
-      THE THING WE HAVE BEEN FIGHTING is the package, not the position. These
-      actors are built from Fertility Mode's child bases, which carry the
-      vanilla child AI, and that AI resolves a home from Variable07. With no
-      value set it falls through to one default marker shared by every actor
-      from the same base - which is why three children landed on byte-identical
-      coordinates after a four-hour sleep, and why moving them has never
-      survived one.
-
-      So instead of moving them somewhere the package disagrees with, this
-      tells the package where they live and asks it to act.
-
-      MoveToPackageLocation IS THE TEST, and it gives the answer immediately
-      rather than after a night's sleep: it sends the actor wherever their
-      package currently resolves. Land inside the right house and Variable07 is
-      being read, and the fix is a line of code. Land back at the default
-      marker and it is not, and we need our own package in the plugin.
-
-      This is exactly what Fertility Mode and Hearthfire both do - set
-      Variable07, evaluate, move - minus the adoption. }
-    Int idx = ChildIndex(asChildName)
-    If idx < 0
-        Diag(LOG_ERROR(), "TryHomePackage: no child named '" + asChildName + "'.")
-        Return False
-    EndIf
-    Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + idx + ".refId", 0)
-    Actor kid = Game.GetFormEx(rid) as Actor
-    If kid == None
-        Diag(LOG_WARN(), "TryHomePackage: " + asChildName + " has no living reference.")
-        Return False
-    EndIf
-    String where = JsonUtil.GetStringValue(StoreFile(), "child." + idx + ".home", "")
-    Int house = HouseIndexFor(where)
-    If house == 0
-        Diag(LOG_WARN(), "TryHomePackage: '" + where + "' is not one of the eight " + \
-            "houses the vanilla child AI understands, so Variable07 cannot say it. " + \
-            "Try this on a child who lives in a player home.")
-        Return False
-    EndIf
-    Diag(LOG_INFO(), "TryHomePackage: telling " + asChildName + " they live at " + \
-        where + " (house " + house + "). Was in '" + CellNameOf(kid) + "'.")
-    kid.SetActorValue("Variable07", house as Float)
-    kid.EvaluatePackage()
-    kid.MoveToPackageLocation()
-    ; The answer, in one line. Read it in the log rather than by walking there.
-    Diag(LOG_WARN(), "TryHomePackage: " + asChildName + " is now in '" + \
-        CellNameOf(kid) + "'. If that is " + where + ", the package reads " + \
-        "Variable07 and this is the fix. If it is anywhere else, it does not.")
-    MarkPlaced(idx, kid)
-    Return True
-EndFunction
-
-Function MarkPlaced(Int aiIdx, Actor akKid) Global
-    { Records where WE last put a child, so a later displacement is detectable.
-
-      DEFERRED, NOT IMMEDIATE, and that correction is the whole of this
-      function's history. Reading GetPositionX straight after MoveTo returns
-      the position the actor is moving FROM when the destination cell is not
-      loaded - the engine has not applied the move yet. The first run recorded
-      four children as standing in Whiterun a moment after being sent to
-      Solitude, and the next sweep duly reported all four as displaced by a
-      hundred and twenty thousand units. They had gone exactly where they were
-      sent; the baseline was wrong.
-
-      So this only ARMS a rebase. The next sweep reads the position once the
-      engine has settled it and records that instead. }
-    If akKid == None || aiIdx < 0
-        Return
-    EndIf
-    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".rebase", 1)
-    JsonUtil.Save(StoreFile())
-EndFunction
-
-Function TakeBaseline(Int aiIdx, Actor akKid) Global
-    { Records the settled position and clears the rebase flag. }
-    String f = StoreFile()
-    JsonUtil.SetFloatValue(f, "child." + aiIdx + ".atX", akKid.GetPositionX())
-    JsonUtil.SetFloatValue(f, "child." + aiIdx + ".atY", akKid.GetPositionY())
-    JsonUtil.SetFloatValue(f, "child." + aiIdx + ".atZ", akKid.GetPositionZ())
-    JsonUtil.SetIntValue(f, "child." + aiIdx + ".rebase", 0)
-    JsonUtil.Save(f)
-EndFunction
-
-Function WatchDisplacement(Int aiIdx, Actor akKid) Global
-    { Reports a child that has moved on its own since we placed it.
-
-      TWO CHILDREN COME BACK AND THEY COME BACK DIFFERENTLY. One reappears
-      beside the player wherever the player is; the other returns to one fixed
-      spot - the place every child was created, which for a PlaceActorAtMe
-      reference is its editor location. Those are different mechanisms and the
-      fix for one is not the fix for the other, so this reports WHICH, rather
-      than assuming.
-
-      Distance from the player is the discriminator and is logged either way:
-      close to the player means something is attaching them to us, far from the
-      player and unchanging means something is resetting them to where they
-      were made.
-
-      DEBUG ONLY AND READ-ONLY. Nothing here moves anyone or writes anything;
-      the aim is to identify the culprit, not to fight it. Fighting a mod that
-      re-decides every few seconds is a loop nobody wins. }
-    If akKid == None || aiIdx < 0 || LogLevel() < LOG_DEBUG()
-        Return
-    EndIf
-    String f = StoreFile()
-    ; A MOVE WE MADE IS SETTLED BY NOW. Take the baseline and report nothing:
-    ; this sweep is the first moment the engine's answer can be trusted.
-    If JsonUtil.GetIntValue(f, "child." + aiIdx + ".rebase", 0) == 1
-        TakeBaseline(aiIdx, akKid)
-        Return
-    EndIf
-    Float ax = JsonUtil.GetFloatValue(f, "child." + aiIdx + ".atX", 0.0)
-    Float ay = JsonUtil.GetFloatValue(f, "child." + aiIdx + ".atY", 0.0)
-    Float az = JsonUtil.GetFloatValue(f, "child." + aiIdx + ".atZ", 0.0)
-    If ax == 0.0 && ay == 0.0 && az == 0.0
-        Return      ; never placed by us, nothing to compare against
-    EndIf
-    Float dx = akKid.GetPositionX() - ax
-    Float dy = akKid.GetPositionY() - ay
-    Float dz = akKid.GetPositionZ() - az
-    Float moved = Math.sqrt(dx * dx + dy * dy + dz * dz)
-    ; A THRESHOLD, because an actor settling onto navmesh or stepping aside is
-    ; not a displacement. 600 units is roughly a room's width - far enough that
-    ; nothing incidental reaches it, near enough to catch a nudge across a cell.
-    If moved < 600.0
-        Return
-    EndIf
-    Actor player = Game.GetPlayer()
-    Float toPlayer = akKid.GetDistance(player)
-    String nm = JsonUtil.GetStringValue(f, "child." + aiIdx + ".name", "?")
-    ; DISTANCE TO THE PLAYER ONLY DISCRIMINATES WHEN THE PLAYER HAS MOVED.
-    ;
-    ; "Next to the player" and "back at the place they were created" are the
-    ; same reading while the player is standing at that place - which is what
-    ; happened on the first run, in Whiterun, a few strides from where every
-    ; child was given a body. Reporting only the distance made an ambiguous
-    ; sample look like an answer.
-    ;
-    ; So both positions are logged. Where the child lands across SEVERAL
-    ; reports is what settles it: identical coordinates every time is a reset
-    ; to a fixed point, coordinates that follow the player is attachment.
-    Diag(LOG_DEBUG(), "DISPLACED: " + nm + " has moved " + moved + \
-        " units since we placed them.")
-    Diag(LOG_DEBUG(), "    was    " + ax + ", " + ay + ", " + az)
-    Diag(LOG_DEBUG(), "    now    " + akKid.GetPositionX() + ", " + \
-        akKid.GetPositionY() + ", " + akKid.GetPositionZ() + \
-        "   cell '" + CellNameOf(akKid) + "'")
-    Diag(LOG_DEBUG(), "    player " + player.GetPositionX() + ", " + \
-        player.GetPositionY() + ", " + player.GetPositionZ() + \
-        "   cell '" + CellNameOf(player) + "'")
-    Diag(LOG_DEBUG(), "    distance to player " + toPlayer + \
-        "  teammate=" + akKid.IsPlayerTeammate() + \
-        "   (compare 'now' across reports: fixed = reset, follows player = attachment)")
-    ; DID THE PIN SURVIVE? Three different failures look identical from the
-    ; outside - the override was never added, it was added and dropped, or it
-    ; is still there and simply loses. Counting it separates the first two from
-    ; the third, and only the third means the package approach is wrong.
-    Diag(LOG_DEBUG(), "    package overrides still on them: " + \
-        ActorUtil.CountPackageOverride(akKid))
-    ; RE-BASELINE, so one displacement is reported once rather than every sweep
-    ; forever. A child that keeps being dragged back reports every time it
-    ; happens, which is the signal we actually want.
-    MarkPlaced(aiIdx, akKid)
-EndFunction
-
 String Function CellNameOf(ObjectReference akRef) Global
     { The reference's cell name, or "" when it cannot be read. }
     If akRef == None
@@ -4469,11 +4559,48 @@ Function NoteHome(Int aiIdx, Actor akKid) Global
     If akKid == None || aiIdx < 0 || !HasSeverActions()
         Return
     EndIf
+    ; A HOME SET BY HAND IS NOT OVERWRITTEN. The player walked into a room to
+    ; say "here"; SeverActions inferring something else later does not get to
+    ; win that argument.
+    If JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".homeManual", 0) == 1
+        Return
+    EndIf
     String now = SeverActionsNative.Native_GetHome(akKid)
     If now != JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".home", "")
         JsonUtil.SetStringValue(StoreFile(), "child." + aiIdx + ".home", now)
         JsonUtil.Save(StoreFile())
     EndIf
+EndFunction
+
+Function ReleaseHolds(Actor akKid, String asName) Global
+    ; LET GO OF THE PLAYER FIRST, OR THE MOVE DOES NOT STICK.
+    ;
+    ; Moving an actor changes where it IS, not what it WANTS. A child running a
+    ; follow package walks straight back, and on the live save that is exactly
+    ; what happened - one child re-followed the player persistently and another
+    ; reappeared after being sent home.
+    ;
+    ; Three separate things can hold a child to the player and all three are
+    ; cleared, because whichever one is missed is the one that wins:
+    ;
+    ;   SkyrimNet packages - its actions apply real AI packages, and a follow
+    ;     applied hours ago is still applied. CancelPendingPackageTasks first,
+    ;     or a scheduled re-apply reinstates what ClearAllPackages just removed.
+    ;   Teammate status - a teammate follows without any package at all, so
+    ;     clearing packages alone leaves it following.
+    ;   SeverActions' follower flag - its home verifier treats followers
+    ;     differently, and a stale flag makes it manage an actor that is not one.
+    ;
+    ; ALL SOFT. SkyrimNet is a hard dependency of this mod so its calls are
+    ; safe; the SeverActions call is behind the same guard as everything else.
+    SkyrimNetApi.CancelPendingPackageTasks(akKid)
+    SkyrimNetApi.ClearAllPackages(akKid)
+    If akKid.IsPlayerTeammate()
+        akKid.SetPlayerTeammate(False, False)
+        Diag(LOG_DEBUG(), asName + " was a player teammate and would have followed you " + \
+            "home again; that has been cleared.")
+    EndIf
+
 EndFunction
 
 Int Function SendChildHome(Int aiIdx) Global
@@ -4488,10 +4615,36 @@ Int Function SendChildHome(Int aiIdx) Global
     If kid == None || kid.IsDead()
         Return 0
     EndIf
+    String nm = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?")
+
+    ; A HOME THE PLAYER SET BY HAND WINS, AND NEEDS NOTHING ELSE INSTALLED.
+    ;
+    ; This function used to refuse outright without SeverActions, which meant a
+    ; player without it had no homes at all and none of this feature existed for
+    ; them. A marker placed by "Set home here" is a complete answer on its own -
+    ; it is a real reference in a real cell, which is all the anchor ever needed.
+    Int ownAnchor = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".anchorId", 0)
+    If JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".homeManual", 0) == 1 && ownAnchor != 0
+        ObjectReference mine = Game.GetFormEx(ownAnchor) as ObjectReference
+        If mine != None
+            String manualWhere = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".home", "")
+            ReleaseHolds(kid, nm)
+            kid.MoveTo(mine)
+            kid.QueueNiNodeUpdate()
+            kid.EvaluatePackage()
+            If !AnchorAtHome(aiIdx, kid, mine)
+                PinAtHome(kid)
+            EndIf
+            Diag(LOG_INFO(), nm + " has gone home to " + manualWhere + ".")
+            Return 1
+        EndIf
+    EndIf
+
     If !HasSeverActions()
+        Diag(LOG_WARN(), nm + " has no home. Without SeverActions a home has to " + \
+            "be set by hand: stand where they should live and press 'Set home here'.")
         Return 0
     EndIf
-    String nm = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?")
     String where = SeverActionsNative.Native_GetHome(kid)
     If where == ""
         ; NEVER GIVEN ONE, or given one before the mother had a home herself.
@@ -4535,33 +4688,7 @@ Int Function SendChildHome(Int aiIdx) Global
             nm + " has not been moved.")
         Return 0
     EndIf
-    ; LET GO OF THE PLAYER FIRST, OR THE MOVE DOES NOT STICK.
-    ;
-    ; Moving an actor changes where it IS, not what it WANTS. A child running a
-    ; follow package walks straight back, and on the live save that is exactly
-    ; what happened - one child re-followed the player persistently and another
-    ; reappeared after being sent home.
-    ;
-    ; Three separate things can hold a child to the player and all three are
-    ; cleared, because whichever one is missed is the one that wins:
-    ;
-    ;   SkyrimNet packages - its actions apply real AI packages, and a follow
-    ;     applied hours ago is still applied. CancelPendingPackageTasks first,
-    ;     or a scheduled re-apply reinstates what ClearAllPackages just removed.
-    ;   Teammate status - a teammate follows without any package at all, so
-    ;     clearing packages alone leaves it following.
-    ;   SeverActions' follower flag - its home verifier treats followers
-    ;     differently, and a stale flag makes it manage an actor that is not one.
-    ;
-    ; ALL SOFT. SkyrimNet is a hard dependency of this mod so its calls are
-    ; safe; the SeverActions call is behind the same guard as everything else.
-    SkyrimNetApi.CancelPendingPackageTasks(kid)
-    SkyrimNetApi.ClearAllPackages(kid)
-    If kid.IsPlayerTeammate()
-        kid.SetPlayerTeammate(False, False)
-        Diag(LOG_DEBUG(), nm + " was a player teammate and would have followed you " + \
-            "home again; that has been cleared.")
-    EndIf
+    ReleaseHolds(kid, nm)
 
     kid.MoveTo(marker)
     ; Rebuild the 3D at the new position, or a child moved into an unloaded
@@ -4576,7 +4703,6 @@ Int Function SendChildHome(Int aiIdx) Global
         how = 1
     EndIf
     NoteHome(aiIdx, kid)
-    MarkPlaced(aiIdx, kid)
     ; A DISMISSED FOLLOWER WITH A HOME. That exact state is the whole fix.
     ;
     ; SeverActions runs two different sandbox packages and only one of them
@@ -4649,6 +4775,78 @@ Int Function SendChildHome(Int aiIdx) Global
             " - no interior marker could be found for it.")
     EndIf
     Return how
+EndFunction
+
+Bool Function SetHomeHereStatic(String asChildName) Global
+    { Records where the player is standing as this child's home.
+
+      THE ONLY WAY A HOME EXISTS WITHOUT SEVERACTIONS. Everything else in this
+      mod reads the home out of SeverActions' co-save, which means a player
+      without it has no home for any child, and every other part of the home
+      system - sending them there, anchoring them, the panel column - has
+      nothing to work with. This is the way in.
+
+      MUST BE STANDING IN THE ROOM, and that is not a design choice. A home is
+      ultimately a reference, and PlaceAtMe cannot make one in a cell that is
+      not loaded. SeverActions asks the same of you for the same reason.
+
+      OURS OUTRANKS THEIRS afterwards. A home set here is marked manual and the
+      sweep stops overwriting it from SeverActions, because a player who walked
+      into a room to say "here" has been clearer than any inference. }
+    Int idx = ChildIndex(asChildName)
+    If idx < 0
+        Diag(LOG_ERROR(), "SetHomeHere: no child named '" + asChildName + "'.")
+        Return False
+    EndIf
+    Actor player = Game.GetPlayer()
+    Static xm = Game.GetFormFromFile(0x0000003B, "Skyrim.esm") as Static
+    If xm == None
+        Return False
+    EndIf
+    String f = StoreFile()
+    ; REUSE THE CHILD'S EXISTING MARKER rather than leaving the old one behind.
+    ; Every PlaceAtMe with persist=True is a permanent reference in the save,
+    ; and a player who changes their mind three times should not leave three.
+    ObjectReference marker = None
+    Int had = JsonUtil.GetIntValue(f, "child." + idx + ".anchorId", 0)
+    If had != 0
+        marker = Game.GetFormEx(had) as ObjectReference
+    EndIf
+    If marker == None
+        marker = player.PlaceAtMe(xm, 1, True)
+        If marker == None
+            Diag(LOG_ERROR(), "SetHomeHere: could not place a marker for " + asChildName + ".")
+            Return False
+        EndIf
+        JsonUtil.SetIntValue(f, "child." + idx + ".anchorId", marker.GetFormID())
+    Else
+        marker.MoveTo(player)
+    EndIf
+
+    String where = CellNameOf(player)
+    If where == ""
+        where = "here"
+    EndIf
+    JsonUtil.SetStringValue(f, "child." + idx + ".home", where)
+    JsonUtil.SetIntValue(f, "child." + idx + ".homeManual", 1)
+    JsonUtil.Save(f)
+    ; Tell SeverActions too when it is present, so its own dialogue and ours
+    ; agree about where this child lives. Soft, like everything else here.
+    Int rid = JsonUtil.GetIntValue(f, "child." + idx + ".refId", 0)
+    Actor kid = Game.GetFormEx(rid) as Actor
+    If HasSeverActions() && kid != None
+        SeverActionsNative.Native_SetHome(kid, where)
+    EndIf
+    Diag(LOG_INFO(), asChildName + " now lives here: " + where + ".")
+    If Notify()
+        Debug.Notification("[Kinship] " + asChildName + " lives here now")
+    EndIf
+    ; If they already have a body, put them in it straight away rather than
+    ; making the player press a second button.
+    If kid != None
+        SendChildHome(idx)
+    EndIf
+    Return True
 EndFunction
 
 Bool Function SendChildHomeStatic(String asChildName) Global
@@ -4742,7 +4940,6 @@ Bool Function SummonChildStatic(String asChildName) Global
     ; The 3D has to be rebuilt at the new position or a child moved from an
     ; unloaded cell arrives as an invisible reference you cannot click.
     kid.QueueNiNodeUpdate()
-    MarkPlaced(idx, kid)
     ; RELEASED, NOT PINNED. Summon is for bringing a child TO you; leaving the
     ; stay package on would have them wander back to the house mid-conversation.
     UnpinFromHome(kid)
@@ -4920,7 +5117,6 @@ Actor Function SpawnOwnedChild(Int aiIdx) Global
     ; A child belongs where its mother lives. Soft - no SeverActions, no home,
     ; and nothing else is affected.
     InheritHome(kid, mum)
-    MarkPlaced(aiIdx, kid)
     Diag(LOG_INFO(), (nm + " has a body now (" + StageName(StageForChild(aiIdx)) + ")."))
     ; AND STRAIGHT HOME, rather than pinned where they were born.
     ;
@@ -5625,7 +5821,6 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
         ; Keep the panel's Home column current. Costs one native read per
         ; embodied child per sweep and writes only when the answer changes.
         NoteHome(aiIdx, akKid)
-        WatchDisplacement(aiIdx, akKid)
     EndIf
 EndFunction
 

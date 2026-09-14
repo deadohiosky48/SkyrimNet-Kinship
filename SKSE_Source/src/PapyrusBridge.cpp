@@ -123,7 +123,20 @@ namespace Kinship::PapyrusBridge {
         return vm->DispatchStaticCall(kScript, "RenameChildStatic", args, callback);
     }
 
-    bool TryHomePackage(const std::string& aChildName) {
+    bool ForgetChildAt(std::int32_t aIndex) {
+        auto* vm = VM();
+        if (!vm || aIndex < 0) {
+            return false;
+        }
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(new NullCallback());
+        auto args = RE::MakeFunctionArguments(std::int32_t(aIndex));
+
+        return vm->DispatchStaticCall(kScript, "ForgetChildAtStatic", args, callback);
+    }
+
+
+
+    bool SetHomeHere(const std::string& aChildName) {
         auto* vm = VM();
         if (!vm || aChildName.empty()) {
             return false;
@@ -131,7 +144,7 @@ namespace Kinship::PapyrusBridge {
         auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(new NullCallback());
         auto args = RE::MakeFunctionArguments(std::string(aChildName));
 
-        return vm->DispatchStaticCall(kScript, "TryHomePackageStatic", args, callback);
+        return vm->DispatchStaticCall(kScript, "SetHomeHereStatic", args, callback);
     }
 
     bool SendChildHome(const std::string& aChildName) {
