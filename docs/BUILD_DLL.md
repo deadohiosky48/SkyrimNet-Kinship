@@ -77,13 +77,13 @@ framework ships only a DLL, so there is nothing to link against.
 Use the script. It handles three traps that cost an afternoon on first contact:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Setup
+pwsh -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Setup
 ```
 
 then, from there on:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Deploy
+pwsh -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Deploy
 ```
 
 Output: `SkyrimNetKinship.dll` → the deploy folder's `SKSE/Plugins/`.

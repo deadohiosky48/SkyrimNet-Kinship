@@ -139,16 +139,24 @@ Creation Kit — one quest, one alias, no masters beyond vanilla) and
 
 ## Working on it
 
+`pwsh`, not `powershell`. PowerShell 7 is a
+[separate install](https://aka.ms/powershell) from the Windows PowerShell 5.1
+that ships with the OS, and the two differ in defaults that have produced real
+bugs here — `Set-Content -Encoding UTF8` writes a byte-order mark on 5.1 and
+not on 7, which is enough to have a JSON manifest rejected whole. The scripts
+are written to work under either and assert the parts that matter, but 7 is
+the one they are documented and tested against.
+
 ```bash
-powershell -ExecutionPolicy Bypass -File "tools\build.ps1"
+pwsh -ExecutionPolicy Bypass -File "tools\build.ps1"
 ```
 
 ```bash
-powershell -ExecutionPolicy Bypass -File "tools\check.ps1"
+pwsh -ExecutionPolicy Bypass -File "tools\check.ps1"
 ```
 
 ```bash
-powershell -ExecutionPolicy Bypass -File "tools\deploy.ps1"
+pwsh -ExecutionPolicy Bypass -File "tools\deploy.ps1"
 ```
 
 `check.ps1` is not optional garnish — every assertion in it corresponds to a
@@ -172,7 +180,7 @@ stored the link — so they must be entered by hand.
 Use the helper — it handles every trap below for you:
 
 ```bash
-powershell -ExecutionPolicy Bypass -File "tools\set-parentage.ps1" -Child Toryy -MotherFormId 0xFE21C812
+pwsh -ExecutionPolicy Bypass -File "tools\set-parentage.ps1" -Child Toryy -MotherFormId 0xFE21C812
 ```
 
 It converts the FormID, posts the call, waits for Papyrus, and prints the

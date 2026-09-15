@@ -12,7 +12,7 @@
     without it installs cleanly and does absolutely nothing.
 
     Usage:
-        powershell -ExecutionPolicy Bypass -File "tools\package.ps1"
+        pwsh -ExecutionPolicy Bypass -File "tools\package.ps1"
 #>
 [CmdletBinding()]
 param(

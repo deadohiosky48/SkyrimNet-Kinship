@@ -23,8 +23,8 @@
     that mod outright. The -Filter below is what prevents it.
 
     Usage (Windows PowerShell 5.1 - `pwsh` is PS7 and is NOT installed here):
-        powershell -ExecutionPolicy Bypass -File "tools\build.ps1"
-        powershell -ExecutionPolicy Bypass -File "tools\build.ps1" -Clean
+        pwsh -ExecutionPolicy Bypass -File "tools\build.ps1"
+        pwsh -ExecutionPolicy Bypass -File "tools\build.ps1" -Clean
 #>
 [CmdletBinding()]
 param(

@@ -30,8 +30,8 @@
     guard below refuses rather than trusting you to remember.
 
     Usage:
-        powershell -ExecutionPolicy Bypass -File "tools\deploy.ps1"
-        powershell -ExecutionPolicy Bypass -File "tools\deploy.ps1" -PromptsOnly
+        pwsh -ExecutionPolicy Bypass -File "tools\deploy.ps1"
+        pwsh -ExecutionPolicy Bypass -File "tools\deploy.ps1" -PromptsOnly
 #>
 [CmdletBinding()]
 param(

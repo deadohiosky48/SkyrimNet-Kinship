@@ -18,9 +18,9 @@
     downloads and are therefore opt-in rather than automatic.
 
     Usage:
-        powershell -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Setup
-        powershell -ExecutionPolicy Bypass -File "tools\build-dll.ps1"
-        powershell -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Deploy
+        pwsh -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Setup
+        pwsh -ExecutionPolicy Bypass -File "tools\build-dll.ps1"
+        pwsh -ExecutionPolicy Bypass -File "tools\build-dll.ps1" -Deploy
 #>
 [CmdletBinding()]
 param(

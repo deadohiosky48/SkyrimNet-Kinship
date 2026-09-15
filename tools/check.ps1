@@ -4,7 +4,7 @@
     sibling mod and was found only by reading a rendered prompt.
 
     Run after every build:
-        powershell -ExecutionPolicy Bypass -File "tools\check.ps1"
+        pwsh -ExecutionPolicy Bypass -File "tools\check.ps1"
 #>
 [CmdletBinding()]
 param()
