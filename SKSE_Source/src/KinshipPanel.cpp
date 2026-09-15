@@ -1,6 +1,7 @@
 #include "KinshipPanel.h"
 
 #include "PCH.h"
+#include "Diagnostics.h"
 #include "PapyrusBridge.h"
 #include "Store.h"
 
@@ -234,6 +235,7 @@ namespace Kinship::Panel {
         int g_editStage = -1;
         char g_editName[64] = "";   // the child's name, editable in the row
         // Row index awaiting a second click before a body is spawned. -1 = none.
+        std::string g_diagResult;
         int g_spawnConfirm = -1;
         // Two-step guard for Forget, held per row. Separate from the others so
         // an open confirmation on one action cannot be answered by clicking a
@@ -833,6 +835,27 @@ namespace Kinship::Panel {
         ImGui::SameLine();
         if (ImGui::Button("Refresh")) {
             Store::Reload();
+        }
+        // DIAGNOSTIC. Asks the engine which AI package is actually running on
+        // every child that has a body, what it is anchored to, and how far the
+        // child has drifted from that anchor - which is the number that
+        // separates "sandboxing normally" from "rooted to the marker".
+        //
+        // BACK TEMPORARILY, with the wider-sandbox experiment. It was removed
+        // in 1.8.0 and immediately wanted again, which is the argument for
+        // reading the engine rather than inferring from where someone ends up.
+        // Goes out with the experiment.
+        ImGui::SameLine();
+        if (ImGui::Button("Diagnose")) {
+            g_diagResult = Diagnostics::DumpPackages();
+            // AND the Papyrus half, which can read the override counts this
+            // side cannot. Two files to read, each written by the side that can
+            // actually see the data.
+            PapyrusBridge::DumpOverrides();
+        }
+        if (!g_diagResult.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", g_diagResult.c_str());
         }
         // SEND EVERYONE HOME AT ONCE.
         //

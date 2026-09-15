@@ -123,6 +123,17 @@ namespace Kinship::PapyrusBridge {
         return vm->DispatchStaticCall(kScript, "RenameChildStatic", args, callback);
     }
 
+    bool DumpOverrides() {
+        auto* vm = VM();
+        if (!vm) {
+            return false;
+        }
+        auto callback = RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>(new NullCallback());
+        auto args = RE::MakeFunctionArguments();
+
+        return vm->DispatchStaticCall(kScript, "DumpOverridesStatic", args, callback);
+    }
+
     bool ForgetChildAt(std::int32_t aIndex) {
         auto* vm = VM();
         if (!vm || aIndex < 0) {

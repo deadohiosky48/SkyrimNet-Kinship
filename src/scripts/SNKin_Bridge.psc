@@ -178,6 +178,26 @@ Function Bootstrap(Bool abForce = False)
     ; rather than stacking, so this is safe on every bootstrap.
     ; One-time migration: see RetryFailedSpawnsOnce.
     RetryFailedSpawnsOnce()
+    ; EVERY LOAD, because a linked reference does not survive one - but NOT
+    ; DURING THE LOAD ITSELF.
+    ;
+    ; ReanchorAll walks the whole roster with two native calls each, and
+    ; Bootstrap runs while the game is still deserialising script state. A
+    ; crash log taken on this save shows the Papyrus VM carrying 5,257 running
+    ; stacks at that moment, frozen, with OBody's OnActorGenerated queued
+    ; thousands deep. Our pass did not cause that crash - it is byte-identical
+    ; to two that predate this function - but adding work to a VM in that state
+    ; is indefensible when nothing needs the answer yet.
+    ;
+    ; FIVE SECONDS OF REAL TIME. Nothing reads a linked reference until the
+    ; actor's package is next evaluated, so the delay costs nothing and the
+    ; load path gets its budget back.
+    ;
+    ; RegisterForSingleUpdate -> OnUpdate. NOT OnUpdateGameTime, which is the
+    ; other timer on this script and a different event entirely; registering
+    ; one and implementing the other is a silent no-op this mod has already
+    ; shipped once. tools/check.ps1 asserts the pairing in both directions.
+    RegisterForSingleUpdate(5.0)
     RegisterForSingleUpdateGameTime(PollHours())
     Diag(LOG_INFO(), "Bridge ready. FMR storage resolved. Watch armed (" + PollHours() + "h).")
 
@@ -539,6 +559,18 @@ EndFunction
 ; ===========================================================================
 ; The poll
 ; ===========================================================================
+
+Event OnUpdate()
+    { The deferred re-anchor, five real seconds after a load.
+
+      ONE JOB, deliberately. This is not a second poll and must not become
+      one: OnUpdateGameTime is the mod's actual heartbeat, and anything that
+      belongs on a schedule belongs there. Nothing re-arms this, so it fires
+      exactly once per Bootstrap. }
+    If _ready && IsEnabled()
+        ReanchorAll()
+    EndIf
+EndEvent
 
 Event OnUpdateGameTime()
     { Game-time poll, matched to FMR's own cadence. FMR drives its whole
@@ -4311,6 +4343,197 @@ Package Function AnchoredStayPackage() Global
     Return Game.GetFormFromFile(0x000DD837, "Skyrim.esm") as Package
 EndFunction
 
+; ---------------------------------------------------------------------------
+; UNDOING THE WIDER-SANDBOX EXPERIMENT
+;
+; A test build let one child at a time be switched from the shipped package to
+; Dawnguard's DLC1DefaultSandbox_1024, anchored to DLC1LinkSandbox. It answered
+; its question and the answer was no:
+;
+;   DefaultSandboxLinkCustom02512  LinkCustom02     radius  512   (shipped)
+;   DLC1DefaultSandbox_1024        DLC1LinkSandbox  radius 1024   (the test)
+;
+; With a working anchor, children on the SHIPPED 512 package sandbox perfectly
+; well - measured at 1220 units (Knut, Lakeview Manor) and 741 (Freya,
+; Breezehome), both well beyond the radius, because a sandbox radius is a
+; preference and not a leash. The standing-still was never the radius. It was
+; that the link had not survived the last save, so the package had no centre
+; to sandbox around at all.
+;
+; THESE TWO LOOKUPS SURVIVE THE EXPERIMENT ONLY TO UNDO IT. A package override
+; persists across saves, so six children on a live save are still carrying
+; DLC1DefaultSandbox_1024 right now. Deleting the code without reverting them
+; would leave those six on a package this mod no longer knows about, holding a
+; link nothing re-issues - which is exactly the failure the re-anchor exists to
+; prevent, inflicted deliberately.
+;
+; ReanchorAll reverts any child still flagged, on every load, so a save that
+; missed one pass is caught by the next. Once no save can plausibly still carry
+; the flag, all three of these can go.
+; ---------------------------------------------------------------------------
+
+Keyword Function WideAnchorKeyword() Global
+    { DLC1LinkSandbox, so the experiment's link can be cleared. }
+    Return Game.GetFormFromFile(0x000033C0, "Dawnguard.esm") as Keyword
+EndFunction
+
+Package Function WideSandboxPackage() Global
+    { DLC1DefaultSandbox_1024, so the experiment's override can be removed. }
+    Return Game.GetFormFromFile(0x00003455, "Dawnguard.esm") as Package
+EndFunction
+
+Function ReanchorAll() Global
+    { Re-issues every child's linked reference, once per game load.
+
+      A LINKED REFERENCE DOES NOT SURVIVE A SAVE. Measured, on a hard save
+      reloaded by name: the markers persist, the package overrides persist, and
+      the links are gone - 0 of 42. Everything that looked like a different bug
+      was downstream of that one fact.
+
+        - Children "stayed home" because a sandbox package with no linked
+          reference has no centre, so the actor stands where it is. That read
+          as the anchor holding. It was the anchor being absent.
+        - Children "would not sandbox" for the same reason, which is why a
+          wider radius appeared to fix it: toggling re-issued the link.
+        - Children walked to Whiterun where the package override was missing
+          too, leaving Fertility Mode's travel package to win by default.
+
+      WHY THIS RATHER THAN FIXING THE WRITE. SNKin_Native.SetLinkedRef puts the
+      pair into ExtraLinkedRef, which is where the engine keeps them and where
+      GetLinkedRef reads them - the read-back in AnchorAtHome proves it lands.
+      What it evidently does not do is get serialised. Making the DLL's write
+      survive is open-ended work inside CommonLibSSE with no guarantee; this
+      needs the markers to persist, and they demonstrably do.
+
+      NO CELL NEEDS TO BE LOADED. That is the whole reason this can run for
+      every child at once: writing extra data is not PlaceAtMe, and the marker
+      already exists. A child in an unloaded interior on the far side of
+      Skyrim is re-linked exactly like one standing in front of the player.
+
+      A DEAD anchorId IS LEFT ALONE, deliberately. Twenty-six of them were
+      dead on the save this was written against - markers from older builds
+      that the engine reclaimed - and re-placing one needs a loaded cell, so
+      it cannot happen here. AnchorAtHome already replaces a dead marker the
+      next time the child is sent home, and logs when it cannot. }
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    Int done = 0
+    Int dead = 0
+    ; NOT "none". None is a Papyrus literal and cannot be a local name - the
+    ; same family as Race, Key, Parent and Light, which this file already
+    ; documents. The compiler's message points at the NEXT line and says
+    ; "no viable alternative at input 'Int'", which names neither the word nor
+    ; the reason.
+    Int unset = 0
+    Int reverted = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+            Actor kid = Game.GetFormEx(JsonUtil.GetIntValue(StoreFile(), \
+                "child." + i + ".refId", 0)) as Actor
+            If kid != None
+                ; UNDO THE EXPERIMENT FIRST, so the re-link below writes the
+                ; shipped keyword rather than restoring the test's. A package
+                ; override survives a save, so a child switched during testing
+                ; is still carrying DLC1DefaultSandbox_1024 - taking the code
+                ; away without taking the override off would strand them.
+                If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".wideSandbox", 0) == 1
+                    Package wp = WideSandboxPackage()
+                    Keyword wk = WideAnchorKeyword()
+                    If wp != None
+                        ActorUtil.RemovePackageOverride(kid, wp)
+                    EndIf
+                    If wk != None
+                        SNKin_Native.SetLinkedRef(kid, None, wk)
+                    EndIf
+                    Package shipped = AnchoredStayPackage()
+                    If shipped != None
+                        ActorUtil.RemovePackageOverride(kid, shipped)
+                        ActorUtil.AddPackageOverride(kid, shipped, 100, 1)
+                    EndIf
+                    JsonUtil.SetIntValue(StoreFile(), "child." + i + ".wideSandbox", 0)
+                    reverted += 1
+                EndIf
+                Int mid = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".anchorId", 0)
+                If mid == 0
+                    unset += 1
+                Else
+                    ObjectReference marker = Game.GetFormEx(mid) as ObjectReference
+                    If marker == None
+                        dead += 1
+                    Else
+                        Keyword kw = AnchorKeyword()
+                        If kw != None
+                            SNKin_Native.SetLinkedRef(kid, marker, kw)
+                            If kid.GetLinkedRef(kw) == marker
+                                done += 1
+                            EndIf
+                        EndIf
+                    EndIf
+                EndIf
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    If reverted > 0
+        Diag(LOG_WARN(), "Reverted " + reverted + " child(ren) from the " + \
+            "wider-sandbox test build back to the shipped package. That test " + \
+            "is over: with a working anchor the shipped package sandboxes fine.")
+    EndIf
+    If done > 0 || dead > 0 || unset > 0
+        Diag(LOG_INFO(), "Re-anchored " + done + " child(ren) after the load. " + \
+            dead + " had a marker that no longer resolves, " + unset + \
+            " have none recorded; both are re-placed the next time they are sent home.")
+    EndIf
+EndFunction
+
+Function DumpOverridesStatic() Global
+    { The half of the diagnostic the DLL cannot see.
+
+      PACKAGE OVERRIDES LIVE IN PAPYRUSUTIL'S OWN CO-SAVE, not on the actor, so
+      the panel's C++ side can report which package is RUNNING but not how many
+      overrides are competing to supply it. Those are different questions with
+      different fixes: no override at all means ours was never applied or has
+      been cleared, while an override that is present and still losing means
+      something outranks us.
+
+      Paired with the C++ dump rather than replacing it - each side logs what it
+      can actually read, into its own file. }
+    Diag(LOG_WARN(), "=== override / anchor dump ===")
+    Int n = JsonUtil.StringListCount(StoreFile(), "roster")
+    Int i = 0
+    Int seen = 0
+    While i < n
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+            Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".refId", 0)
+            Actor kid = Game.GetFormEx(rid) as Actor
+            If kid != None
+                seen += 1
+                Int stored = JsonUtil.GetIntValue(StoreFile(), "child." + i + ".anchorId", 0)
+                String anchorState = "none recorded"
+                If stored != 0
+                    ObjectReference m = Game.GetFormEx(stored) as ObjectReference
+                    If m == None
+                        anchorState = "recorded " + stored + " but it NO LONGER RESOLVES"
+                    Else
+                        anchorState = "recorded " + stored + " in '" + CellNameOf(m) + "'"
+                    EndIf
+                EndIf
+                String wide = ""
+                If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".wideSandbox", 0) == 1
+                    wide = "  [wide sandbox]"
+                EndIf
+                Diag(LOG_WARN(), "  " + JsonUtil.GetStringValue(StoreFile(), \
+                    "child." + i + ".name", "?") + ": " + \
+                    ActorUtil.CountPackageOverride(kid) + " override(s), anchor " + \
+                    anchorState + wide)
+            EndIf
+        EndIf
+        i += 1
+    EndWhile
+    Diag(LOG_WARN(), "=== " + seen + " embodied child(ren) ===")
+EndFunction
+
+
 ObjectReference Function HomeAnchorFor(Int aiIdx, Actor akKid) Global
     { The child's own marker, placed at their home the first time and reused
       forever after.
@@ -4381,6 +4604,23 @@ Bool Function AnchorAtHome(Int aiIdx, Actor akKid, ObjectReference akAt = None) 
     If marker == None
         marker = HomeAnchorFor(aiIdx, akKid)
         If marker == None
+            ; SAID OUT LOUD. This was the one exit of three that returned
+            ; silently, and it is the one thirty-one children were taking: the
+            ; caller then reported them "sent home, indoors" - true - while the
+            ; anchor the whole design rests on had never been written. The other
+            ; two exits log, which is exactly why they were never the mystery.
+            ;
+            ; BOTH HALVES, because they fail for different reasons and need
+            ; different fixes: no marker from the caller means SeverActions did
+            ; not resolve one, and no marker from HomeAnchorFor means PlaceAtMe
+            ; refused - usually an unloaded cell, sometimes a stored anchorId
+            ; that no longer resolves.
+            Int storedId = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".anchorId", 0)
+            Diag(LOG_WARN(), "AnchorAtHome: no marker for " + akKid.GetDisplayName() + \
+                " - caller supplied none, and HomeAnchorFor could not provide one " + \
+                "(stored anchorId " + storedId + ", child in '" + CellNameOf(akKid) + \
+                "'). They are home but NOT anchored, so the sandbox package has " + \
+                "nothing to resolve and they will stand still.")
             Return False
         EndIf
         ; Ours to position: put it where the child is now, which is the house.
