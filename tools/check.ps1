@@ -308,6 +308,30 @@ foreach ($f in Get-ChildItem $promptDir -Filter '*.prompt' -Recurse -File) {
     }
 }
 
+Write-Host "`nBeta 25 plugin id"
+# The archive ships prompts\ for Beta 24 and external\<id>\ for Beta 25, and
+# package.ps1 and deploy.ps1 each carry the id as a default. If they disagree,
+# local testing exercises one folder name and players get another - and since
+# each SkyrimNet build reads only one of the two layouts, the mismatch is
+# invisible on whichever build the author happens to run.
+#
+# A CHANGED ID IS NOT AN UPDATE. Beta 25 keys a plugin by its id, so renaming
+# it after release makes every player see a new plugin sitting alongside the old
+# one rather than an update to it.
+$idPkg = [regex]::Match((Get-Content (Join-Path $PSScriptRoot 'package.ps1') -Raw),
+                        '(?m)^\s*\[string\]\$PluginId\s*=\s*''([^'']+)''')
+$idDep = [regex]::Match((Get-Content (Join-Path $PSScriptRoot 'deploy.ps1') -Raw),
+                        '(?m)^\s*\[string\]\$PluginId\s*=\s*''([^'']+)''')
+if (-not $idPkg.Success -or -not $idDep.Success) {
+    Bad "could not read `$PluginId from package.ps1 and deploy.ps1"
+} elseif ($idPkg.Groups[1].Value -ne $idDep.Groups[1].Value) {
+    Bad "plugin id differs: package.ps1 '$($idPkg.Groups[1].Value)', deploy.ps1 '$($idDep.Groups[1].Value)'"
+} elseif ($idPkg.Groups[1].Value -notmatch '^[a-z0-9_-]+\.[a-z0-9_-]+$') {
+    Bad "plugin id '$($idPkg.Groups[1].Value)' is not '{author}.{slug}', lowercase [a-z0-9_-] with one dot"
+} else {
+    Good "package.ps1 and deploy.ps1 agree on '$($idPkg.Groups[1].Value)'"
+}
+
 Write-Host ""
 if ($fail -gt 0) {
     Write-Host "$fail check(s) failed." -ForegroundColor Red
