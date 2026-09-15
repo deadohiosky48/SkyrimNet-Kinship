@@ -148,18 +148,45 @@ try {
     # -Depth matters: without it PowerShell flattens the nested `mods` entry to
     # a type name string and the manifest ships silently malformed.
     #
-    # WRITTEN WITHOUT A BOM, and not with Set-Content -Encoding UTF8, which in
-    # Windows PowerShell 5.1 emits one. A BOM is three bytes before the opening
-    # brace: still valid UTF-8, not valid JSON to a strict parser, and the
-    # failure is the whole plugin folder rejected rather than anything that
-    # points at the cause. The same trap the settings manifest documents at the
-    # top of its own file, for the same reason - this repo has been bitten by
-    # PowerShell 5.1's encoding defaults before.
-    $json = $manifest | ConvertTo-Json -Depth 5
+    # WRITTEN WITHOUT A BOM, and not with Set-Content -Encoding UTF8, whose
+    # behaviour DEPENDS ON THE HOST: Windows PowerShell 5.1 emits a BOM, pwsh 7
+    # does not. A BOM is three bytes before the opening brace - still valid
+    # UTF-8, not valid JSON to a strict parser - and the failure is the whole
+    # plugin folder rejected with nothing pointing at the cause.
+    #
+    # THE HOST DEPENDENCY IS THE TRAP, not the encoding. The usage line at the
+    # top of this file says `powershell`, which is 5.1, so the documented way to
+    # run this script was the way that produced a BOM - while any build driven
+    # by a pwsh 7 shell came out clean. Same script, same repo, two different
+    # artifacts depending on what typed the command.
+    #
+    # ONE WRITE, and version is correct before it. An earlier shape wrote the
+    # file and then read it back to substitute the semver, which doubled the
+    # encoding decision, pulled a BOM into a string through Get-Content -Raw,
+    # and matched a '"version": "..."' literal that any formatting change would
+    # break. Resolving $semver before the hashtable removes all three at once.
+    $manifestPathOut = Join-Path $ext 'manifest.json'
     [System.IO.File]::WriteAllText(
-        (Join-Path $ext 'manifest.json'),
-        $json,
+        $manifestPathOut,
+        ($manifest | ConvertTo-Json -Depth 5),
         (New-Object System.Text.UTF8Encoding($false)))
+
+    # ASSERTED IN BYTES, because the bug is host-dependent and so is most of the
+    # machinery that could check it. System.Text.Json is .NET Core only and is
+    # simply absent under 5.1 - a check that throws on the very host the bug
+    # appears on is not a check. Comparing the first byte to 0x7B is arithmetic
+    # and works anywhere; ConvertFrom-Json then confirms the content parses.
+    $mBytes = [System.IO.File]::ReadAllBytes($manifestPathOut)
+    if ($mBytes.Length -lt 1 -or $mBytes[0] -ne 0x7B) {
+        $head = ($mBytes[0..([Math]::Min(3, $mBytes.Length - 1))] |
+                 ForEach-Object { $_.ToString('X2') }) -join ' '
+        throw "manifest.json does not start with '{' (first bytes: $head) - a BOM or stray prefix would have Beta 25 reject the whole plugin folder."
+    }
+    try {
+        $null = [System.Text.Encoding]::UTF8.GetString($mBytes) | ConvertFrom-Json
+    } catch {
+        throw "manifest.json is not valid JSON: $($_.Exception.Message)"
+    }
 
     # EVERY LEGACY CONTENT FILE MUST HAVE A COUNTERPART, compared by hash.
     #
