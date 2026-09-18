@@ -383,13 +383,21 @@ Function ReviewFuture() Global
 EndFunction
 
 Int Function CountUnresolved() Global
-    { How many children were recorded with a shortlist instead of a mother. }
+    { How many children were recorded with a shortlist AND still have no mother.
+
+      BOTH HALVES, because the shortlist outlives the question. It is kept
+      after a mother is established on purpose - deleting it on assignment is
+      in the backlog as a mistake an early build of the panel made - so
+      counting shortlists alone reports children who were settled long ago as
+      still waiting, and invites the player to overwrite them. See
+      ResolveUncertain, where that actually happened. }
     String f = SNKin_Bridge.StoreFile()
     Int n = JsonUtil.StringListCount(f, "roster")
     Int count = 0
     Int i = 0
     While i < n
-        If JsonUtil.IntListCount(f, "child." + i + ".candidates") > 0
+        If JsonUtil.IntListCount(f, "child." + i + ".candidates") > 0 \
+                && JsonUtil.GetIntValue(f, "child." + i + ".motherId", 0) == 0
             count += 1
         EndIf
         i += 1
@@ -417,7 +425,22 @@ Function ResolveUncertain() Global
     Int i = 0
     While i < n && count < 32
         Int c = JsonUtil.IntListCount(f, "child." + i + ".candidates")
-        If c > 0
+        ; A CHILD WHO ALREADY HAS A MOTHER IS NOT WAITING FOR ONE, and offering
+        ; them here did real damage on a live save: a child whose mother had
+        ; been established months earlier was still listed, because the
+        ; shortlist that failed to identify her at the time is kept
+        ; deliberately - it is evidence, and an early build that deleted it on
+        ; assignment is recorded in the backlog as a LOSS.
+        ;
+        ; So the shortlist stays and the question goes away. Answering it could
+        ; only ever overwrite a settled answer with a guess this mod already
+        ; knew it could not make - which is exactly what happened: a correct
+        ; mother replaced by a candidate, from a menu that presented itself as
+        ; an open question.
+        ;
+        ; The panel had this right from the start - Store::Child::NeedsMother
+        ; tests both halves - and this side did not.
+        If c > 0 && JsonUtil.GetIntValue(f, "child." + i + ".motherId", 0) == 0
             idxOf[count] = i
             rows[count] = JsonUtil.StringListGet(f, "roster", i) + "   (" + c + " possible mothers)"
             count += 1
