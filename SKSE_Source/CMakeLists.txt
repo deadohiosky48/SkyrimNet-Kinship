@@ -70,7 +70,6 @@ set(SOURCES
     src/Natives.cpp
     src/KinshipPanel.cpp
     src/PapyrusBridge.cpp
-    src/Diagnostics.cpp
     src/Store.cpp
 )
 

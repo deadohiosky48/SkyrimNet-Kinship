@@ -126,11 +126,11 @@ says so and points you at the panel.
 They start at **child** and age on from there — there is no birth to count
 from, so the clock is planted where the body already is.
 
-**This mod does not manage where they live.** Whichever mod adopted them holds
-them in a quest alias, and an alias outranks anything applied to the actor — so
-their adoption already does the job, and does it better than this could. *Send
-home* and *Set home here* are hidden for these children rather than offered and
-refused.
+Homes work exactly as they do for any other child — the Home column, *Send
+home* and *Set home here* are all live. Note that whichever mod adopted them may
+also have an opinion: an adoption holds a child in a quest alias, and alias
+packages outrank anything applied to the actor, so if an adopted child walks
+back somewhere else, that is who moved them.
 
 No fertility mod is required for any of this.
 

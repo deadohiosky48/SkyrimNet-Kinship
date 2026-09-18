@@ -103,13 +103,6 @@ namespace Kinship::PapyrusBridge {
     // Reversible on the Papyrus side; the record and its index survive.
     bool ForgetChildAt(std::int32_t aIndex);
 
-    // The half of the diagnostic Papyrus can see and this side cannot:
-    // package-override counts live in PapyrusUtil's co-save, not on the actor.
-    // Dispatched alongside DumpPackages by the same button; its output lands in
-    // snkin.log rather than here.
-    bool DumpOverrides();
-
-
     // True when the Papyrus VM is up and SNKin_Bridge is loaded. The panel
     // shows itself read-only rather than offering buttons that silently do
     // nothing.

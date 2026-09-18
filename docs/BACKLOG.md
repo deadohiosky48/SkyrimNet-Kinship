@@ -280,11 +280,17 @@ All three of the hazards identified up front are handled:
   > that stayed.** EMULATING adoption is still dropped, for exactly these
   > reasons. TAKING OVER a child some other mod has already adopted shipped in
   > 1.9.0, because it is a different question: the child exists, the adoption
-  > owns their home and their alias, and all this mod adds is the record, the
-  > stage clock and the persona. It touches nothing the adoption is doing -
-  > `SendChildHome` and `SetHomeHere` refuse outright for these children,
-  > because an alias package outranks ours and the two children genuinely at
-  > home on the development save were the two adopted ones.
+  > owns their alias, and all this mod adds is the record, the stage clock and
+  > the persona.
+  >
+  > 1.9.0 ALSO refused every home operation for them, reasoning that an alias
+  > package outranks ours - true, and the wrong conclusion, corrected in 1.9.2.
+  > Outranking is not conflicting. A player who gives an adopted child a home in
+  > SeverActions has said where they want that child to live, and refusing only
+  > guaranteed the panel would print "their adoption" over a home that really
+  > was recorded. If the alias wins, the child stays where the adoption puts
+  > them and nothing is worse than before; if it does not, the player gets what
+  > they asked for. Declining on their behalf only ensured the first outcome.
   >
   > An adopted child is also the only population here whose reference is
   > PERSISTENT, so it is the one case where the succession in 1d could work as

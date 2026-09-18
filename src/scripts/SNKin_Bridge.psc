@@ -2461,15 +2461,18 @@ EndFunction
 Bool Function IsAdopted(Int aiIdx) Global
     { True for a child the player took in rather than fathered.
 
-      NEARLY EVERY READ OF THIS IS A REFUSAL, which is the shape of the whole
-      feature: the two stage inferences that would otherwise call them grown,
-      the four home paths that would fight their adoption quest for control of
-      where they live, and the confiscation path that would go looking through
-      a female player's own inventory for a baby that never existed.
+      WHAT IT CHANGES IS NARROW, and deliberately narrower than it was. 1.9.0
+      also used this to refuse every home operation, reasoning that an adoption
+      quest's alias outranks our packages. True, and the wrong conclusion - see
+      SendChildHome. An adopted child now goes home, gets a home set, and is
+      re-anchored exactly like any other.
 
-      The two that are not refusals are the decorator payloads, which carry it
-      to the prompt so a bio does not narrate a birth that did not happen, and
-      the pair in Forget/Restore, which hand a persistent NPC back cleanly. }
+      What is left: the two stage inferences that would otherwise read a bound
+      reference as a grown one, the confiscation path that would go looking
+      through a female player's own inventory for a baby that never existed,
+      the decorator payloads that stop a bio narrating a birth that did not
+      happen, and the Forget/Restore pair that hands a persistent NPC back
+      cleanly. }
     If aiIdx < 0
         Return False
     EndIf
@@ -4666,11 +4669,7 @@ Function ReanchorAll() Global
     Int unset = 0
     Int reverted = 0
     While i < n
-        ; ADOPTED CHILDREN ARE SKIPPED ENTIRELY, not counted as unanchored.
-        ; Nothing ever anchors them - their adoption quest owns where they live -
-        ; so including them would only inflate the "have none recorded" number
-        ; with children that number is not about.
-        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1 && !IsAdopted(i)
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
             Actor kid = Game.GetFormEx(JsonUtil.GetIntValue(StoreFile(), \
                 "child." + i + ".refId", 0)) as Actor
             If kid != None
@@ -5042,13 +5041,6 @@ Function NoteHome(Int aiIdx, Actor akKid) Global
     If akKid == None || aiIdx < 0 || !HasSeverActions()
         Return
     EndIf
-    ; NOTHING TO PUBLISH FOR AN ADOPTED CHILD. Their home is decided by the mod
-    ; that adopted them, nothing here can act on it, and the panel says so in
-    ; the column instead. Copying a value across every sweep that no code path
-    ; is allowed to use would be a native call spent to mislead.
-    If IsAdopted(aiIdx)
-        Return
-    EndIf
     ; A HOME SET BY HAND IS NOT OVERWRITTEN. The player walked into a room to
     ; say "here"; SeverActions inferring something else later does not get to
     ; win that argument.
@@ -5097,22 +5089,17 @@ Int Function SendChildHome(Int aiIdx) Global
     { Moves one child to the home it is already recorded as living in.
 
       1 moved inside, 2 moved to the doorstep, 0 could not. }
-    ; AN ADOPTED CHILD IS NOT OURS TO MOVE, and this refusal is load-bearing
-    ; rather than cautious.
+    ; ADOPTED CHILDREN GO HOME LIKE EVERYONE ELSE. 1.9.0 refused them here, on
+    ; the reasoning that their adoption holds them in a quest ALIAS whose
+    ; packages outrank ours - which is true, and was the wrong conclusion.
     ;
-    ; Their adoption quest holds them in an ALIAS, and an alias package outranks
-    ; anything on the actor. That is not a theory: the package diagnostic that
-    ; produced the 1.8.2 re-anchor found exactly two children genuinely at home
-    ; out of thirty-two, and both were adopted through Hearthfire. What already
-    ; works is the alias. Applying our own sandbox override on top would put a
-    ; priority-99 package underneath it - a fight we would lose - and the anchor
-    ; marker would be placed for nothing.
-    If IsAdopted(aiIdx)
-        Diag(LOG_INFO(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
-            " is an adopted child, so their own adoption handles where they live. " + \
-            "Kinship does not move them - move them the way that mod provides.")
-        Return 0
-    EndIf
+    ; Outranking is not the same as conflicting. A player who gives an adopted
+    ; child a home in SeverActions has said where they want that child to live,
+    ; and refusing meant the panel showed "their adoption" over a home that was
+    ; really recorded and would not move them to it. If the alias wins, the
+    ; child stays where the adoption puts them and nothing is worse than before;
+    ; if it does not, the player gets what they asked for. Declining on their
+    ; behalf only guaranteed the first outcome.
     Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0)
     If rid == 0
         Return 0
@@ -5304,14 +5291,6 @@ Bool Function SetHomeHereStatic(String asChildName) Global
         Diag(LOG_ERROR(), "SetHomeHere: no child named '" + asChildName + "'.")
         Return False
     EndIf
-    ; Same refusal as SendChildHome, and for the same reason: a home recorded
-    ; here would apply a package this child's adoption quest outranks, and the
-    ; marker would be placed for nothing. See SendChildHome.
-    If IsAdopted(idx)
-        Diag(LOG_INFO(), asChildName + " is an adopted child - their adoption " + \
-            "decides where they live, and it outranks anything Kinship would apply.")
-        Return False
-    EndIf
     Actor player = Game.GetPlayer()
     Static xm = Game.GetFormFromFile(0x0000003B, "Skyrim.esm") as Static
     If xm == None
@@ -5386,11 +5365,7 @@ Int Function SendAllChildrenHomeStatic() Global
     Int n = JsonUtil.StringListCount(StoreFile(), "roster")
     Int i = 0
     While i < n
-        ; Adopted children are skipped here rather than refused one at a time,
-        ; so "sent 12 home" is not accompanied by a line of log for every child
-        ; this button was never going to move. SendChildHome refuses them too -
-        ; this only keeps the sweep quiet about it.
-        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1 && !IsAdopted(i)
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
             Int how = SendChildHome(i)
             If how > 0
                 moved += 1
