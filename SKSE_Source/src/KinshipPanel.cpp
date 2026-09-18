@@ -190,21 +190,15 @@ namespace Kinship::Panel {
             if (!ImGui::CollapsingHeader("Take in a child who already exists")) {
                 return;
             }
-            // THE CROSSHAIR IS THE EASIER ROUTE and this says so, because a
-            // player standing in front of their adopted daughter does not know
-            // her form id and should not have to go and find it. This form is
-            // for the child who is three holds away.
             ImGui::TextWrapped(
                 "For a child you adopted through Hearthfire or any other mod. Kinship "
                 "starts keeping their record, renders their parentage to SkyrimNet and "
                 "ages them through the life stages - it does not move them or manage "
-                "their home, which their adoption already does better.\n\n"
-                "Easier: point at them in-game and use the Kinship hotkey menu, which "
-                "needs no FormID. This form is for a child you cannot walk to.");
-            ImGui::SetNextItemWidth(90.0f);
-            ImGui::InputTextWithHint("##adoptid", "FormID", g_adoptHex, sizeof(g_adoptHex),
-                                     ImGuiInputTextFlags_CharsHexadecimal);
-            ImGui::SameLine();
+                "their home, which their adoption already does better.");
+
+            // THE STAGE IS CHOSEN FIRST because both buttons below use it, and
+            // a control that silently governs the button above it is a control
+            // people set after the fact, once.
             ImGui::SetNextItemWidth(230.0f);
             // std::size, not IM_ARRAYSIZE: this build uses SKSEMenuFramework's
             // own ImGui header, which does not define that macro.
@@ -225,6 +219,49 @@ namespace Kinship::Panel {
                 ImGui::EndTooltip();
             }
 
+            // THE CROSSHAIR, READ FROM HERE RATHER THAN THROUGH PAPYRUS.
+            //
+            // The hotkey menu offers the same thing and cannot be the only way
+            // in, for two reasons. It is built on UILib, which this mod borrows
+            // from FERTILITY MODE's own quest - so on precisely the install
+            // this release was written for, one with no fertility mod at all,
+            // that menu never opens. And a keypress is answered by every quest
+            // instance registered for it, which on a live save was seven; this
+            // panel has no such race.
+            //
+            // CrosshairPickData holds the last picked reference and picking
+            // stops once a menu is up, so what it holds while this panel is
+            // open is whoever the player was looking at when they opened it.
+            RE::Actor* aimed = nullptr;
+            if (auto* pick = RE::CrosshairPickData::GetSingleton()) {
+                if (auto handle = pick->GetActiveTarget(); handle) {
+                    if (auto ref = handle.get()) {
+                        aimed = ref->As<RE::Actor>();
+                    }
+                }
+            }
+            if (aimed && aimed != RE::PlayerCharacter::GetSingleton()) {
+                const std::string label = std::string("Adopt ") + aimed->GetDisplayFullName();
+                if (ImGui::Button(label.c_str())) {
+                    PapyrusBridge::AdoptChild(
+                        static_cast<std::int32_t>(aimed->GetFormID()),
+                        kAdoptStageValues[g_adoptStage]);
+                    NoteWrite();
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(under your crosshair)");
+            } else {
+                ImGui::TextDisabled(
+                    "Nobody under your crosshair - look at the child before opening this "
+                    "panel, or enter their FormID below.");
+            }
+
+            // The FormID route stays for a child who is three holds away, and
+            // as the answer when the crosshair pick is empty.
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputTextWithHint("##adoptid", "FormID", g_adoptHex, sizeof(g_adoptHex),
+                                     ImGuiInputTextFlags_CharsHexadecimal);
+            ImGui::SameLine();
             const bool ok = g_adoptHex[0] != '\0';
             if (!ok) ImGui::BeginDisabled();
             if (ImGui::Button("Record as my child")) {

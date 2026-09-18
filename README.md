@@ -114,9 +114,14 @@ A child you adopted — through Hearthfire or any adoption overhaul — can be
 taken onto the roster and treated like any other: parentage rendered to
 SkyrimNet, a life stage that advances, a persona that grows up.
 
-Point at them and press the Kinship hotkey (**Left Shift + 9** by default),
-then **Take the child under my crosshair into the family**. The F1 panel has the
-same thing by FormID for a child you cannot walk to.
+Look at them and open the **F1 panel** → *Take in a child who already exists* →
+**Adopt \<name\>**. The panel reads whoever is under your crosshair, so there is
+no FormID to find; the FormID box is still there for a child you cannot walk to.
+
+The Kinship hotkey (**Left Shift + 9**) offers the same thing as its last entry,
+but note it needs **Fertility Mode** installed — that menu is built on a UI
+library this mod borrows from Fertility Mode's own quest. Without it the hotkey
+says so and points you at the panel.
 
 They start at **child** and age on from there — there is no birth to count
 from, so the clock is planted where the body already is.

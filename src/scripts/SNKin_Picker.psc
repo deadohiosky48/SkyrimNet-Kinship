@@ -48,6 +48,18 @@ Function Say(String asText) Global
     Debug.Notification("[Kinship] " + asText)
 EndFunction
 
+Function Diag(String asText) Global
+    { A log line from the picker, which had none.
+
+      SAY AND DIAG ARE NOT ALTERNATIVES. A notification is four seconds in the
+      corner of a screen the player may not be looking at, and it is gone; the
+      log is what is still there tomorrow when someone asks why a menu did
+      something unexpected. The menu was the only part of this mod that wrote
+      nothing at all, and the first adoption that did not happen is what proved
+      that matters. }
+    SNKin_Bridge.Diag(SNKin_Bridge.LOG_INFO(), "Picker: " + asText)
+EndFunction
+
 String Function AskChildNameFromList(String asWord, String asMother, String[] asNames) Global
     { Offers a list of names instead of a text field, the way Fertility Mode
       does in its VR path.
@@ -143,7 +155,62 @@ Function OpenMenu() Global
 
       A single key rather than three separate binds, because a mod that asks
       the player to remember three scan codes for something they will use a
-      handful of times has designed for the author, not the player. }
+      handful of times has designed for the author, not the player.
+
+      ONE MENU PER PRESS, ENFORCED PROCESS-WIDE, and this is a fix rather than
+      a precaution. Every quest instance of this mod registers the hotkey in
+      Bootstrap - a live log shows it armed SEVEN times in one game process,
+      because orphaned instances from earlier installs bootstrap alongside the
+      current one, which the sweep lock already documents. Every one of them
+      answers the keypress.
+
+      That was survivable while all instances ran the same code. It stopped
+      being survivable the moment a build changed mid-session: the menu you are
+      looking at is built by whichever instance won, the row you click is
+      handed to ALL of them, and an instance running the previous build maps
+      that row number onto its own, different list. Choosing the last entry
+      then runs something else entirely - which is exactly what "the popup
+      seems broken" looked like.
+
+      Same shape as the sweep lock, including the staleness escape: Papyrus has
+      no try/finally, so a holder that died mid-menu must not wedge the hotkey
+      forever. Sixty seconds, because a menu is something a person answers. }
+    ; NO UI PROVIDER IS NOT A SILENT FAILURE ANY MORE, and this one is on us.
+    ;
+    ; Lib() borrows UILib from FERTILITY MODE's own handler quest, because that
+    ; is where this mod could reliably find an instance of it. So without
+    ; Fertility Mode there is no menu AT ALL - which nobody noticed while a
+    ; fertility mod was effectively required, and which 1.9.0 turned into a
+    ; contradiction the moment it started supporting installs that have none.
+    ; The hotkey simply did nothing, with no message and no log line.
+    ;
+    ; The F1 panel needs none of this and can do the same job, so say so.
+    If Lib() == None
+        Say("The hotkey menu needs Fertility Mode's UI library - use the F1 panel instead.")
+        SNKin_Bridge.Diag(SNKin_Bridge.LOG_WARN(), "Hotkey menu: no UILib provider. It is " + \
+            "borrowed from Fertility Mode's handler quest, which is not present. " + \
+            "Everything the menu does is also in the SKSE panel (F1), including " + \
+            "taking in an adopted child.")
+        Return
+    EndIf
+
+    Float lockNow = Utility.GetCurrentRealTime()
+    Float held = StorageUtil.GetFloatValue(None, "SNKin_MenuLock", 0.0)
+    ; held > now means it came from a previous session - real time counts from
+    ; launch and resets, the same trap the sweep lock documents.
+    If held > 0.0 && held <= lockNow && (lockNow - held) < 60.0
+        Return
+    EndIf
+    StorageUtil.SetFloatValue(None, "SNKin_MenuLock", lockNow)
+
+    ; READ THE CROSSHAIR BEFORE ANY MENU OPENS, not after.
+    ;
+    ; Both crosshair actions used to read it on the far side of a list prompt,
+    ; which asks the player to keep an NPC under a crosshair they can no longer
+    ; see while they read a menu. The press is the moment the player is aiming
+    ; at someone; that is the moment worth trusting.
+    Actor aimedAt = Game.GetCurrentCrosshairRef() as Actor
+
     Int pending = CountUnresolved()
     Int future = SNKin_Bridge.CountFutureChildren()
     Int broken = SNKin_Bridge.CountBrokenRecords()
@@ -167,10 +234,20 @@ Function OpenMenu() Global
     ; makes the crosshair the primary path for assigning a parent.
     actions[6] = "Take the child under my crosshair into the family"
     Int pick = Pick("Kinship", actions)
+    ; SAY WHICH ROW CAME BACK, AND WHAT THIS BUILD THINKS IT MEANS. The first
+    ; report of the adoption entry running the wrong action left no trace at
+    ; all in the log - the menu is the one part of this mod that was completely
+    ; silent, and it is the part where two builds can disagree. One line.
+    If pick >= 0 && pick < actions.Length
+        SNKin_Bridge.Diag(SNKin_Bridge.LOG_INFO(), "Menu: row " + pick + " of " + \
+            actions.Length + " -> " + actions[pick])
+    Else
+        SNKin_Bridge.Diag(SNKin_Bridge.LOG_DEBUG(), "Menu: closed without a choice (" + pick + ").")
+    EndIf
     If pick == 0
         ResolveUncertain()
     ElseIf pick == 1
-        AssignCrosshairParent()
+        AssignCrosshairParent(aimedAt)
     ElseIf pick == 2
         AssignRemoteParent()
     ElseIf pick == 3
@@ -180,11 +257,12 @@ Function OpenMenu() Global
     ElseIf pick == 5
         RepairRecords()
     ElseIf pick == 6
-        AdoptCrosshairChild()
+        AdoptCrosshairChild(aimedAt)
     EndIf
+    StorageUtil.SetFloatValue(None, "SNKin_MenuLock", 0.0)
 EndFunction
 
-Function AdoptCrosshairChild() Global
+Function AdoptCrosshairChild(Actor akWho) Global
     { Point at a child you have already adopted - through Hearthfire or any
       other mod - and Kinship starts keeping their record.
 
@@ -196,21 +274,34 @@ Function AdoptCrosshairChild() Global
 
       NOTHING HERE ASKS WHICH MOD ADOPTED THEM. Hearthfire, an adoption
       overhaul, a follower mod's orphan - the record is the same, and asking
-      would make this depend on the part of a load order that varies most. }
-    Actor who = Game.GetCurrentCrosshairRef() as Actor
+      would make this depend on the part of a load order that varies most.
+
+      akWho IS CAPTURED AT THE KEYPRESS by OpenMenu, not read here. The
+      crosshair the player was aiming at when they reached for the hotkey is
+      the one they mean; what is under it after two menus have been read is
+      anyone's guess. }
+    Actor who = akWho
     If who == None
-        Say("No actor under the crosshair.")
+        Say("Nothing was under your crosshair when you opened the menu.")
+        Diag("nothing was under the crosshair at the keypress")
         Return
     EndIf
     If who == Game.GetPlayer()
         Say("That is you.")
+        Diag("the crosshair was on the player")
         Return
     EndIf
     String nm = who.GetDisplayName()
+    ; EVERY EXIT FROM HERE IS LOGGED, and that is a direct response to the
+    ; first live attempt: it recorded nobody and left NOTHING in the log to say
+    ; whether this function had even run. A path whose failures are invisible
+    ; cannot be diagnosed from a save that has already moved on.
+    Diag("chose " + nm + " (" + who.GetFormID() + ")")
     String[] confirm = new String[2]
     confirm[0] = "Yes - " + nm + " is my child"
     confirm[1] = "No"
     If Pick("Record " + nm + " as your child?", confirm) != 0
+        Diag("declined at the confirmation for " + nm)
         Return
     EndIf
     If SNKin_Bridge.AdoptChild(who)
@@ -375,23 +466,30 @@ Function ResolveUncertain() Global
     EndIf
 EndFunction
 
-Function AssignCrosshairParent() Global
+Function AssignCrosshairParent(Actor akWho) Global
     { Point at someone and press the key: they become a parent of a child you
       then choose.
 
       THE CROSSHAIR IS THE PRIMARY PATH because it needs no candidate list at
       all - the hard part of "which of Skyrim's NPCs is this" is answered by
       the player looking at them. AssignRemoteParent covers the ones you cannot
-      walk to. }
-    Actor who = Game.GetCurrentCrosshairRef() as Actor
+      walk to.
+
+      akWho IS CAPTURED AT THE KEYPRESS, in OpenMenu. This used to read the
+      crosshair here, after the menu - which works only because the player
+      usually has not moved, and quietly picks up whoever they HAVE moved onto
+      when they have. }
+    Actor who = akWho
     If who == None
-        Say("No actor under the crosshair.")
+        Say("Nothing was under your crosshair when you opened the menu.")
+        Diag("assign-parent: nothing was under the crosshair at the keypress")
         Return
     EndIf
     If who == Game.GetPlayer()
         Say("That is you. Point at the other parent.")
         Return
     EndIf
+    Diag("assign-parent: " + who.GetDisplayName() + " (" + who.GetFormID() + ")")
     AssignTo(who)
 EndFunction
 
