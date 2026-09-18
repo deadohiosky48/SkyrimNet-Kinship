@@ -276,6 +276,20 @@ All three of the hazards identified up front are handled:
   removes the only reason to care whether the `SpawnedChild` keyword lives on
   the base.
 
+  > **Half of this was answered later, and the half that was right is the half
+  > that stayed.** EMULATING adoption is still dropped, for exactly these
+  > reasons. TAKING OVER a child some other mod has already adopted shipped in
+  > 1.9.0, because it is a different question: the child exists, the adoption
+  > owns their home and their alias, and all this mod adds is the record, the
+  > stage clock and the persona. It touches nothing the adoption is doing -
+  > `SendChildHome` and `SetHomeHere` refuse outright for these children,
+  > because an alias package outranks ours and the two children genuinely at
+  > home on the development save were the two adopted ones.
+  >
+  > An adopted child is also the only population here whose reference is
+  > PERSISTENT, so it is the one case where the succession in 1d could work as
+  > designed rather than being blocked by a `0xFF` ref.
+
 **Known risk, untested:** `PromptPendingNames` calls a modal `ShowTextInput`
 from inside the sweep, so the sweep is blocked until the player answers.
 Re-entry is already guarded, and the prompt fires at most once per birth, but

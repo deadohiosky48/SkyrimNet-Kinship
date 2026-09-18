@@ -308,6 +308,33 @@ foreach ($f in Get-ChildItem $promptDir -Filter '*.prompt' -Recurse -File) {
     }
 }
 
+Write-Host "`nDLL -> Papyrus dispatch"
+# EVERY NAME THE DLL DISPATCHES MUST EXIST AS A GLOBAL, and nothing at runtime
+# will ever tell you otherwise.
+#
+# DispatchStaticCall takes the function name as a STRING and returns true for
+# "the call was queued", not "the function exists" - and this mod's callback is
+# a deliberate no-op because Papyrus marshals nothing useful back. So a typo, or
+# a Global that was renamed on the Papyrus side, produces a button that looks
+# like it works, writes nothing, and logs nothing. That is the exact failure
+# shape this file exists to make impossible.
+#
+# INSTANCE FUNCTIONS DO NOT COUNT. DispatchStaticCall cannot reach one, which is
+# why half the bridge has a Global twin at all.
+$bridgeSrc = Get-Content (Join-Path $repo 'src\scripts\SNKin_Bridge.psc') -Raw
+$globals = [regex]::Matches($bridgeSrc, '(?m)^\s*(?:[A-Za-z_][\w\[\]]*\s+)?Function\s+([A-Za-z_]\w*)\s*\([^)]*\)[^\r\n]*\bGlobal\b') |
+           ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() }
+$dispatched = [regex]::Matches((Get-Content (Join-Path $repo 'SKSE_Source\src\PapyrusBridge.cpp') -Raw),
+                               'DispatchStaticCall\(\s*kScript\s*,\s*"([^"]+)"') |
+              ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$missing = @($dispatched | Where-Object { $globals -notcontains $_.ToLowerInvariant() })
+if ($missing.Count -gt 0) {
+    Bad ("PapyrusBridge.cpp dispatches to function(s) that are not Global in SNKin_Bridge.psc: " +
+         ($missing -join ', '))
+} else {
+    Good "all $($dispatched.Count) dispatched name(s) exist as Papyrus Globals"
+}
+
 Write-Host "`nBeta 25 plugin id"
 # The archive ships prompts\ for Beta 24 and external\<id>\ for Beta 25, and
 # package.ps1 and deploy.ps1 each carry the id as a default. If they disagree,

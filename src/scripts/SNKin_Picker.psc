@@ -147,7 +147,7 @@ Function OpenMenu() Global
     Int pending = CountUnresolved()
     Int future = SNKin_Bridge.CountFutureChildren()
     Int broken = SNKin_Bridge.CountBrokenRecords()
-    String[] actions = new String[6]
+    String[] actions = new String[7]
     ; Listed FIRST and with its count, because it is the only entry that is
     ; time-sensitive: an unresolved shortlist is a question the game already
     ; asked and is waiting on.
@@ -161,6 +161,11 @@ Function OpenMenu() Global
     ; which for anyone running custom followers happens routinely - so this is a
     ; normal maintenance action, not an emergency tool.
     actions[5] = "Repair records broken by a load order change (" + broken + ")"
+    ; THE CROSSHAIR IS THE ONLY SENSIBLE WAY IN for an adoption. The panel can
+    ; take a FormID, but a player who has just adopted a child is standing in
+    ; front of them and does not know their form id - the same reasoning that
+    ; makes the crosshair the primary path for assigning a parent.
+    actions[6] = "Take the child under my crosshair into the family"
     Int pick = Pick("Kinship", actions)
     If pick == 0
         ResolveUncertain()
@@ -174,6 +179,47 @@ Function OpenMenu() Global
         ReviewFuture()
     ElseIf pick == 5
         RepairRecords()
+    ElseIf pick == 6
+        AdoptCrosshairChild()
+    EndIf
+EndFunction
+
+Function AdoptCrosshairChild() Global
+    { Point at a child you have already adopted - through Hearthfire or any
+      other mod - and Kinship starts keeping their record.
+
+      CONFIRMED FIRST, because it is a write the player cannot see the result
+      of from where they are standing, and because pointing at the wrong NPC in
+      a crowded room is easy. Undoing it is Forget in the panel, which
+      tombstones rather than deletes, but a confirmation is cheaper than an
+      explanation.
+
+      NOTHING HERE ASKS WHICH MOD ADOPTED THEM. Hearthfire, an adoption
+      overhaul, a follower mod's orphan - the record is the same, and asking
+      would make this depend on the part of a load order that varies most. }
+    Actor who = Game.GetCurrentCrosshairRef() as Actor
+    If who == None
+        Say("No actor under the crosshair.")
+        Return
+    EndIf
+    If who == Game.GetPlayer()
+        Say("That is you.")
+        Return
+    EndIf
+    String nm = who.GetDisplayName()
+    String[] confirm = new String[2]
+    confirm[0] = "Yes - " + nm + " is my child"
+    confirm[1] = "No"
+    If Pick("Record " + nm + " as your child?", confirm) != 0
+        Return
+    EndIf
+    If SNKin_Bridge.AdoptChild(who)
+        Say(nm + " is now recorded as your child.")
+    Else
+        ; The bridge has already logged WHICH of the four refusals this was, at
+        ; error level, with the name. Repeating it in a corner notification that
+        ; disappears in four seconds would not help anyone fix it.
+        Say("Could not record " + nm + " - see snkin.log.")
     EndIf
 EndFunction
 

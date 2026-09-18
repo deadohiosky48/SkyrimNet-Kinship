@@ -34,6 +34,8 @@
 {#   kin.known       1 when anything is recorded, 0 otherwise                  #}
 {#   kin.role        "child" or "mother"                                       #}
 {#   kin.motherKnown 1 only when the mother was actually resolved              #}
+{#   kin.adopted     1 when this child was taken in, not born - on the child's #}
+{#                   own payload, and per child on a parent's list             #}
 {# INTS, NOT JSON BOOLEANS - a hand-written lowercase "true" does not survive #}
 {# Papyrus compilation (it case-folds against the string table), and one bad  #}
 {# token would make EVERY kin.* field undefined at once, silently. Everything #}
@@ -57,14 +59,37 @@
 {% set father = default(kin.father, "") %}
 {% set mother = default(kin.mother, "") %}
 {% set mother_known = default(kin.motherKnown, 0) %}
+{# ADOPTED CHILDREN TAKE A DIFFERENT VERB, and it is not a nicety. The line
+   below asserts that a recorded mother BORE this child - which for a child the
+   player took in is a confident statement about something that never happened,
+   rendered into that child's own bio as fact on every single render. A record
+   this mod cannot tell apart from a birth is a record it should not narrate as
+   one. #}
+{% set adopted = default(kin.adopted, 0) %}
 {% if first_person %}
-## Your Parents
+## Your {% if adopted == 1 %}Family{% else %}Parents{% endif %}
 
+{% if adopted == 1 %}
+{# EITHER PARENT, NOT THE FATHER. An adopted child has ONE recorded parent -
+   whichever the player is - so writing this around `father` would leave a
+   female player's adopted child with a bio that opens "took you in as well"
+   and never says who the first one was. Same trap the parent's side was
+   rewritten to fix, arriving from the other direction. #}
+{% if father != "" %}
+{{ father }} took you in. You are their child — not by birth, and that is not a secret from anyone, least of all you.
+{% endif %}
+{% if mother_known == 1 %}
+{% if father != "" %}{{ mother }} took you in as well, and is your parent in exactly the same way.{% else %}{{ mother }} took you in. You are her child — not by birth, and that is not a secret from anyone, least of all you.{% endif %}
+{% endif %}
+- How you hold that is entirely yours. Gratitude, belonging, wariness, grief for whatever came before, or a fact you rarely think about at all — nothing here tells you to be grateful.
+- Whatever your life was before this belongs to you, and this record does not know it. Do not invent the people who bore you, and do not narrate a past nobody has established.
+{% else %}
 {% if father != "" %}
 {{ father }} is your father. This is simply a fact of your life, known to you for as long as you have been able to understand anything.
 {% endif %}
 {% if mother_known == 1 %}
 {{ mother }} is your mother. She bore you{% if father != "" %} to {{ father }}{% endif %}.
+{% endif %}
 {% endif %}
 
 {# The instruction NOT to perform it is as important as the fact itself. Told
@@ -87,7 +112,12 @@
 {% endfor %}
 - Being born together is not the same as merely being related. Whatever lies between you — closeness, rivalry, weariness — it started before either of you could choose it.
 {% endif %}
-{% if mother_known == 1 %}
+{# BOTH BRANCHES ARE ABOUT A BIRTH and neither applies to a child who was taken
+   in - the adoption block above has already said the honest version of both,
+   and the "do not invent her" line would contradict it by implying there is a
+   mother in this record who simply went unrecorded. #}
+{% if adopted == 1 %}
+{% elif mother_known == 1 %}
 - Your feelings about {{ mother }} are your own — closeness, distance, longing, resentment are all available to you and depend on what your life has actually been like.
 {% elif father != "" %}
 {# THE HONEST SILENCE. A child whose mother we could not recover must read as a
@@ -146,7 +176,7 @@
 {% endif %}
 {% else %}
 {% if father != "" %}
-{{ me.name }} is {{ father }}'s child{% if mother_known == 1 %} by {{ mother }}{% endif %}{% if default(kin.stage, "") != "" and default(kin.stageNum, 5) < 5 %}, a {{ kin.stage }}{% endif %}.
+{{ me.name }} is {{ father }}'s {% if adopted == 1 %}adopted child{% else %}child{% if mother_known == 1 %} by {{ mother }}{% endif %}{% endif %}{% if default(kin.stage, "") != "" and default(kin.stageNum, 5) < 5 %}, a {{ kin.stage }}{% endif %}.
 {% endif %}
 {% endif %}
 
@@ -174,7 +204,10 @@
    and so no bio of their own to carry it. A mother who cannot say whether the
    child she bore is a baby or nearly grown is missing the thing she would
    actually know. #}
-- **{{ default(k.name, "your child") }}**{% if default(k.gender, "") != "" %}, your {{ k.gender }}{% endif %}{% if default(k.relation, "") == "mother" %}, whom you bore{% elif default(k.relation, "") == "father" %}, whom you fathered{% endif %}{% if default(k.otherParent, "") != "" %} with {{ k.otherParent }}{% endif %}{% if default(k.stage, "") != "" and default(k.stageNum, 5) < 5 %} — still a {{ k.stage }}{% elif default(k.stageNum, -1) == 5 %} — grown now{% endif %}.
+{# THE VERB COMES FROM THE DATA. "Whom you bore" is wrong twice over for an
+   adopted child - it claims a birth, and it claims it of a parent who may be
+   the one person in the room who knows better. #}
+- **{{ default(k.name, "your child") }}**{% if default(k.gender, "") != "" %}, your {{ k.gender }}{% endif %}{% if default(k.adopted, 0) == 1 %}, whom you took in rather than bore{% elif default(k.relation, "") == "mother" %}, whom you bore{% elif default(k.relation, "") == "father" %}, whom you fathered{% endif %}{% if default(k.adopted, 0) != 1 and default(k.otherParent, "") != "" %} with {{ k.otherParent }}{% endif %}{% if default(k.stage, "") != "" and default(k.stageNum, 5) < 5 %} — still a {{ k.stage }}{% elif default(k.stageNum, -1) == 5 %} — grown now{% endif %}.
 {% endfor %}
 {% if n > 8 %}
 - ...and {{ n - 8 }} more.

@@ -22,7 +22,7 @@
     Fertility Mode Reloaded's own script through a Vortex conflict and break
     that mod outright. The -Filter below is what prevents it.
 
-    Usage (Windows PowerShell 5.1 - `pwsh` is PS7 and is NOT installed here):
+    Usage (pwsh, i.e. PowerShell 7 - see README for why not 5.1):
         pwsh -ExecutionPolicy Bypass -File "tools\build.ps1"
         pwsh -ExecutionPolicy Bypass -File "tools\build.ps1" -Clean
 #>

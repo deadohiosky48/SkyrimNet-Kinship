@@ -108,6 +108,29 @@ give a body to a child that Fertility Mode named but never spawned.
 
 ---
 
+## Adopted children
+
+A child you adopted — through Hearthfire or any adoption overhaul — can be
+taken onto the roster and treated like any other: parentage rendered to
+SkyrimNet, a life stage that advances, a persona that grows up.
+
+Point at them and press the Kinship hotkey (**Left Shift + 9** by default),
+then **Take the child under my crosshair into the family**. The F1 panel has the
+same thing by FormID for a child you cannot walk to.
+
+They start at **child** and age on from there — there is no birth to count
+from, so the clock is planted where the body already is.
+
+**This mod does not manage where they live.** Whichever mod adopted them holds
+them in a quest alias, and an alias outranks anything applied to the actor — so
+their adoption already does the job, and does it better than this could. *Send
+home* and *Set home here* are hidden for these children rather than offered and
+refused.
+
+No fertility mod is required for any of this.
+
+---
+
 ## Install
 
 Install the archive from
@@ -125,7 +148,7 @@ SKSE panel is included. There is no manual build step.
 | **SKSE64** | required |
 | **PapyrusUtil SE** | required — `StorageUtil`, `JsonUtil` and `MiscUtil` are the entire storage layer |
 | **SkyrimNet** | required in practice; this mod exists to feed it |
-| **A fertility mod** | soft — **Fertility Mode Reloaded**, **Fertility Mode v3**, or **Beeing Female NG**. Without one the plugin loads inert, the decorator answers `known:0`, and nothing errors |
+| **A fertility mod** | soft — **Fertility Mode Reloaded**, **Fertility Mode v3**, or **Beeing Female NG**. Only *birth capture* needs one. Without any of them the rest still runs: adopted children, records, life stages, homes, the panel and the decorator all work, and no plugin here masters a fertility mod |
 | **SKSE Menu Framework** | optional — only for the F1 management panel. Without it the in-game picker still works |
 
 ### Building from source

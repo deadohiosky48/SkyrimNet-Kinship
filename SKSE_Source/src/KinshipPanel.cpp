@@ -9,6 +9,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <iterator>
 
 // ImGui is provided BY SKSEMenuFramework through its own namespace rather than
 // linked directly - the framework owns the ImGui context and the render hook.
@@ -166,6 +167,76 @@ namespace Kinship::Panel {
                 g_newChildHex[0] = '\0';
                 g_newMother = 0;
                 g_newFather = 0;
+                NoteWrite();
+            }
+            if (!ok) ImGui::EndDisabled();
+            ImGui::Separator();
+        }
+
+        // ---- adoption -------------------------------------------------------
+        char g_adoptHex[16] = "";
+        int g_adoptStage = 0;   // index into kAdoptStages below
+
+        // -1 is "decide from the body", which is the first entry and the
+        // default. Newborn and infant are deliberately absent: they are the two
+        // stages with no actor at all, and this form only ever takes an actor
+        // that already exists.
+        const char* const kAdoptStageLabels[] = {
+            "from their body (recommended)", "toddler", "child", "adolescent", "adult"
+        };
+        const int kAdoptStageValues[] = { -1, 2, 3, 4, 5 };
+
+        void DrawAdoptChild() {
+            if (!ImGui::CollapsingHeader("Take in a child who already exists")) {
+                return;
+            }
+            // THE CROSSHAIR IS THE EASIER ROUTE and this says so, because a
+            // player standing in front of their adopted daughter does not know
+            // her form id and should not have to go and find it. This form is
+            // for the child who is three holds away.
+            ImGui::TextWrapped(
+                "For a child you adopted through Hearthfire or any other mod. Kinship "
+                "starts keeping their record, renders their parentage to SkyrimNet and "
+                "ages them through the life stages - it does not move them or manage "
+                "their home, which their adoption already does better.\n\n"
+                "Easier: point at them in-game and use the Kinship hotkey menu, which "
+                "needs no FormID. This form is for a child you cannot walk to.");
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputTextWithHint("##adoptid", "FormID", g_adoptHex, sizeof(g_adoptHex),
+                                     ImGuiInputTextFlags_CharsHexadecimal);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(230.0f);
+            // std::size, not IM_ARRAYSIZE: this build uses SKSEMenuFramework's
+            // own ImGui header, which does not define that macro.
+            ImGui::Combo("starting stage", &g_adoptStage, kAdoptStageLabels,
+                         static_cast<int>(std::size(kAdoptStageLabels)));
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+                ImGui::TextUnformatted(
+                    "Where their life-stage clock starts. There is no birth to count "
+                    "from, so it is planted here and runs on from it - a child becomes "
+                    "an adolescent, then an adult, on the same clock as any other.\n\n"
+                    "\"From their body\" reads whether the actor is a child or an adult "
+                    "and lands on child for the first. It cannot tell a toddler from an "
+                    "adolescent, because Skyrim has one child body for every age - "
+                    "correct it here or in the Stage column afterwards.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+
+            const bool ok = g_adoptHex[0] != '\0';
+            if (!ok) ImGui::BeginDisabled();
+            if (ImGui::Button("Record as my child")) {
+                const char* s = g_adoptHex;
+                if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+                // Through uint32 and back, like every other FormID this panel
+                // parses: Papyrus has no unsigned type, so 0xFF... must arrive
+                // negative rather than overflowing into nothing.
+                const auto id = static_cast<std::int32_t>(
+                    static_cast<std::uint32_t>(std::strtoul(s, nullptr, 16)));
+                PapyrusBridge::AdoptChild(id, kAdoptStageValues[g_adoptStage]);
+                g_adoptHex[0] = '\0';
                 NoteWrite();
             }
             if (!ok) ImGui::EndDisabled();
@@ -474,6 +545,27 @@ namespace Kinship::Panel {
                     }
                 } else {
                     ImGui::Text("%s", c.name.c_str());
+                    // WHY THE ROW IS MARKED AT ALL: an adopted child is the one
+                    // kind this panel deliberately cannot do things to. Without
+                    // a tag, the missing "Send home" button reads as a bug in
+                    // the panel rather than as a boundary being respected.
+                    if (c.adopted) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(adopted)");
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::BeginTooltip();
+                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                            ImGui::TextUnformatted(
+                                "Taken in rather than born. Kinship keeps their record and "
+                                "ages them through the life stages like any other child.\n\n"
+                                "It does not move them or manage their home: whichever mod "
+                                "adopted them holds them in a quest alias, and that outranks "
+                                "anything this mod could apply. That is also why adopted "
+                                "children are the ones that actually stay put.");
+                            ImGui::PopTextWrapPos();
+                            ImGui::EndTooltip();
+                        }
+                    }
                 }
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(c.gender.empty() ? "-" : c.gender.c_str());
@@ -537,7 +629,11 @@ namespace Kinship::Panel {
                 // it, copied into the store by the Papyrus side because the panel
                 // cannot reach the co-save.
                 ImGui::TableNextColumn();
-                if (!c.hasBody) {
+                if (c.adopted) {
+                    // NOT "none", which would read as something to fix. Their
+                    // home is real and is simply somebody else's to set.
+                    ImGui::TextDisabled("their adoption");
+                } else if (!c.hasBody) {
                     // No actor means nothing to ask about - not the same as
                     // having no home, and worth distinguishing.
                     ImGui::TextDisabled("-");
@@ -629,61 +725,70 @@ namespace Kinship::Panel {
                             ImGui::PopTextWrapPos();
                             ImGui::EndTooltip();
                         }
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("Send home")) {
-                            PapyrusBridge::SendChildHome(c.name);
-                            NoteWrite();
-                        }
-                        // IMMEDIATELY AFTER ITS OWN BUTTON. IsItemHovered reads
-                        // the LAST SUBMITTED item, and this tooltip used to sit
-                        // below the Var07 experiment - so it described "Send
-                        // home" while hovering over a different button entirely.
-                        // Third time this file has made that mistake.
-                        if (ImGui::IsItemHovered()) {
-                            ImGui::BeginTooltip();
-                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-                            ImGui::TextUnformatted(
-                                "Move this child to the home they are already recorded "
-                                "as living in - inheriting their mother's if they have "
-                                "none yet.\n\n"
-                                "A child is placed wherever you were standing when it "
-                                "got a body, and nothing has ever moved it since. This "
-                                "puts it where it belongs without escorting it there.");
-                            ImGui::PopTextWrapPos();
-                            ImGui::EndTooltip();
-                        }
-                        // SET HOME HERE.
-                        //
-                        // Offered on every child with a body, not only the
-                        // homeless ones: correcting a home is as ordinary as
-                        // setting one, and a player who has walked somewhere to
-                        // say "here" should not have to clear the old value
-                        // first.
-                        //
-                        // This is also the ONLY route to a home for a player
-                        // without SeverActions, which is where every other home
-                        // in this mod comes from.
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("Set home here")) {
-                            PapyrusBridge::SetHomeHere(c.name);
-                            NoteWrite();
-                        }
-                        if (ImGui::IsItemHovered()) {
-                            ImGui::BeginTooltip();
-                            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
-                            ImGui::TextUnformatted(
-                                "Record where you are standing right now as this "
-                                "child's home, and send them there.\n\n"
-                                "Stand inside the room you want them to live in. "
-                                "A home is ultimately a marker, and one can only "
-                                "be placed in a cell that is loaded - which is why "
-                                "you have to be there, and why SeverActions asks "
-                                "the same.\n\n"
-                                "A home set this way is kept: the usual sweep stops "
-                                "overwriting it from SeverActions, and it works with "
-                                "SeverActions not installed at all.");
-                            ImGui::PopTextWrapPos();
-                            ImGui::EndTooltip();
+                        // NEITHER HOME BUTTON IS OFFERED FOR AN ADOPTED CHILD.
+                        // The Papyrus side refuses both anyway - see
+                        // SendChildHome - so showing them would be offering a
+                        // button whose whole behaviour is to log why it did
+                        // nothing. Summon stays: moving an actor to you is
+                        // temporary, applies no package, and is the only way to
+                        // get a child in front of SkyrimNet's bio hotkey.
+                        if (!c.adopted) {
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Send home")) {
+                                PapyrusBridge::SendChildHome(c.name);
+                                NoteWrite();
+                            }
+                            // IMMEDIATELY AFTER ITS OWN BUTTON. IsItemHovered reads
+                            // the LAST SUBMITTED item, and this tooltip used to sit
+                            // below the Var07 experiment - so it described "Send
+                            // home" while hovering over a different button entirely.
+                            // Third time this file has made that mistake.
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::BeginTooltip();
+                                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                                ImGui::TextUnformatted(
+                                    "Move this child to the home they are already recorded "
+                                    "as living in - inheriting their mother's if they have "
+                                    "none yet.\n\n"
+                                    "A child is placed wherever you were standing when it "
+                                    "got a body, and nothing has ever moved it since. This "
+                                    "puts it where it belongs without escorting it there.");
+                                ImGui::PopTextWrapPos();
+                                ImGui::EndTooltip();
+                            }
+                            // SET HOME HERE.
+                            //
+                            // Offered on every child with a body, not only the
+                            // homeless ones: correcting a home is as ordinary as
+                            // setting one, and a player who has walked somewhere to
+                            // say "here" should not have to clear the old value
+                            // first.
+                            //
+                            // This is also the ONLY route to a home for a player
+                            // without SeverActions, which is where every other home
+                            // in this mod comes from.
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Set home here")) {
+                                PapyrusBridge::SetHomeHere(c.name);
+                                NoteWrite();
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::BeginTooltip();
+                                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+                                ImGui::TextUnformatted(
+                                    "Record where you are standing right now as this "
+                                    "child's home, and send them there.\n\n"
+                                    "Stand inside the room you want them to live in. "
+                                    "A home is ultimately a marker, and one can only "
+                                    "be placed in a cell that is loaded - which is why "
+                                    "you have to be there, and why SeverActions asks "
+                                    "the same.\n\n"
+                                    "A home set this way is kept: the usual sweep stops "
+                                    "overwriting it from SeverActions, and it works with "
+                                    "SeverActions not installed at all.");
+                                ImGui::PopTextWrapPos();
+                                ImGui::EndTooltip();
+                            }
                         }
                     }
                     if (!c.hasBody && (c.stage < 0 || c.stage >= 2)) {
@@ -895,6 +1000,7 @@ namespace Kinship::Panel {
         }
 
         DrawAddChild();
+        DrawAdoptChild();
         DrawTable();
 
         // A recorded mother shows as a pressed green button among her

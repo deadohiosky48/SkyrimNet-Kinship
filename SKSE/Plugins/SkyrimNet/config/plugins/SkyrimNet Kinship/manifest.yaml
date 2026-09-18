@@ -1,7 +1,7 @@
 plugin:
   name: "SkyrimNet Kinship"
-  version: "1.8.2"
-  description: "Makes parentage permanent and visible to SkyrimNet — a child knows who its parents are, and a mother never forgets the child she bore. Works with Fertility Mode Reloaded, Fertility Mode v3 and Beeing Female NG."
+  version: "1.9.0"
+  description: "Makes parentage permanent and visible to SkyrimNet — a child knows who its parents are, and a mother never forgets the child she bore. Works with Fertility Mode Reloaded, Fertility Mode v3 and Beeing Female NG, and with adopted children on their own."
   icon: "🍼"
 
 # NOTE: SkyrimNet plugin manifests DO NOT support dotted paths. Each dotted
@@ -52,7 +52,7 @@ schema:
     - name: "Life Stages"
       path: "kinStagesEnabled"
       type: "bool"
-      description: "Let children age through newborn, infant, toddler, child and adolescent before adulthood, instead of jumping straight from birth to grown. Off by default. Turning it on plants every child already on the roster at the stage set below, because their recorded birth date is when this mod first saw them rather than when they were born - computing from it would call a grown child a newborn. They age on normally from wherever they are planted, and individuals can be corrected in the panel."
+      description: "Let children age through newborn, infant, toddler, child and adolescent before adulthood, instead of jumping straight from birth to grown. Off by default. This is also what ages an ADOPTED child: they are planted at child when you take them in and grow on from there, so with this off they simply stay a child forever. Turning it on plants every child already on the roster at the stage set below, because their recorded birth date is when this mod first saw them rather than when they were born - computing from it would call a grown child a newborn. They age on normally from wherever they are planted, and individuals can be corrected in the panel."
       defaultValue: false
       category: "Life Stages"
 

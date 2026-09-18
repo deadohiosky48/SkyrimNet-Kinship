@@ -167,11 +167,19 @@ Function Bootstrap(Bool abForce = False)
     RegisterHotkey()
 
     _store = ResolveStorage()
-    If _store == None
-        _ready = False
-        Diag(LOG_WARN(), "Fertility Mode Reloaded not found - kinship inert, decorator still answers known:false.")
-        Return
-    EndIf
+    ; NO FERTILITY MOD IS A SUPPORTED CONFIGURATION, and it stopped being one
+    ; the day this returned early.
+    ;
+    ; Everything past this point - the poll, the re-anchor, the stage clock, the
+    ; exports - was gated on Fertility Mode's storage resolving. So a player who
+    ; only wanted their ADOPTED children in SkyrimNet got a decorator answering
+    ; out of a store that nothing ever updated: no stage ever advanced, no
+    ; export was ever republished, and the re-anchor never ran. A Beeing
+    ; Female-only install was in exactly the same position, which is worse,
+    ; because this mod claims to support it.
+    ;
+    ; Ingestion is the only FMR-specific part, and those passes now decline
+    ; individually. Nothing else in the sweep touches that storage at all.
     _ready = True
 
     ; Arm the watch loop. A single-update registration replaces any prior one
@@ -199,7 +207,13 @@ Function Bootstrap(Bool abForce = False)
     ; shipped once. tools/check.ps1 asserts the pairing in both directions.
     RegisterForSingleUpdate(5.0)
     RegisterForSingleUpdateGameTime(PollHours())
-    Diag(LOG_INFO(), "Bridge ready. FMR storage resolved. Watch armed (" + PollHours() + "h).")
+    String source = "no fertility mod"
+    If _store != None
+        source = "FMR storage resolved"
+    ElseIf HasBfng()
+        source = "Beeing Female only"
+    EndIf
+    Diag(LOG_INFO(), "Bridge ready (" + source + "). Watch armed (" + PollHours() + "h).")
 
     ; EVERY LOAD, not just the first run. This was inside the one-shot seed
     ; pass and that was wrong: a mother already carrying the player's baby when
@@ -608,10 +622,13 @@ Function Sweep()
       BabyAdded BEFORE calling GenerateName, and GenerateName BLOCKS on a menu
       the player may leave open indefinitely - so the delivery transition and
       the child record can land in different polls, or the same one, and this
-      must be correct either way. }
-    If _store == None
-        Return
-    EndIf
+      must be correct either way.
+
+      NO LONGER REFUSES WITHOUT FERTILITY MODE. This used to return here, which
+      meant every pass below it - the stage clock, the exports, the drift
+      repair - existed only for people running FMR. The six passes that read
+      FMR's arrays decline on their own now; the rest are about OUR records and
+      have never needed it. }
 
     ; RE-ENTRANCY GUARD, and it is not theoretical. On the first live run this
     ; ran EIGHT times concurrently: the quest OnInit, the alias OnInit and
@@ -712,10 +729,12 @@ Function RememberPeople()
 
       Two aligned lists rather than one keyed object, matching how candidates
       are stored: duplicates are impossible because entries are deduped by ID
-      before insertion, so the alignment cannot drift. }
-    If _store == None
-        Return
-    EndIf
+      before insertion, so the alignment cannot drift.
+
+      THE FMR ARRAYS ARE ONE SOURCE, NOT THE REASON THIS RUNS. It used to
+      decline outright without them, which left an install with no fertility
+      mod holding an empty parent editor - including no PLAYER, who is the one
+      entry an adoption actually needs. }
     MigratePeople()
 
     ; THE PLAYER IS ALWAYS A CANDIDATE PARENT and was missing entirely - he is
@@ -728,8 +747,11 @@ Function RememberPeople()
     ; for; TrackedFathers holds the men it has recorded as fathers. Reading only
     ; the first is why the Father dropdown offered nothing but women - there
     ; were no men in the roster at all.
-    Int added = RememberFrom(_store.TrackedActors, 0)
-    added = RememberFrom(_store.TrackedFathers, added)
+    Int added = 0
+    If _store != None
+        added = RememberFrom(_store.TrackedActors, 0)
+        added = RememberFrom(_store.TrackedFathers, added)
+    EndIf
     ; Also seed from parents ALREADY recorded, so the editor is useful on the
     ; very first run rather than only for people met afterwards. Without this
     ; the roster starts empty and every mother recorded before today - Kayla,
@@ -937,6 +959,11 @@ Function SeedPass()
       That is NOT the same as doing nothing: without it, the very first sweep
       would see every old child as brand new and record it anyway, which is
       precisely what the setting is meant to prevent. }
+    If _store == None
+        ; Nothing to seed FROM. Not marked seeded either: install FMR later and
+        ; this still gets its one pass.
+        Return
+    EndIf
     If JsonUtil.GetIntValue(StoreFile(), "seeded", 0) == 1
         Return
     EndIf
@@ -989,6 +1016,9 @@ Function AdoptBabiesInFlight()
 
       A ONE-TIME bounded scan over TrackedActors (up to 256), which is why it
       lives in the seed pass and not in the poll. }
+    If _store == None
+        Return
+    EndIf
     Form[] tracked = _store.TrackedActors
     Float[] babyAdded = _store.BabyAdded
     If tracked == None || babyAdded == None
@@ -1039,6 +1069,9 @@ EndFunction
 Function NoteDeliveries()
     { Watches BabyAdded fall from >0 to 0, which is FMR's own signal that a
       baby has finished growing and a child record is about to be written. }
+    If _store == None
+        Return
+    EndIf
     Form[] tracked = _store.TrackedActors
     If tracked == None || tracked.Length == 0
         Return
@@ -1103,6 +1136,9 @@ Function NoteNewChildren()
       later entry down, so an index is not a stable identity. FMR enforces name
       uniqueness at naming time (PlayerChildName.Find(proposedName) == -1), so
       a name is. }
+    If _store == None
+        Return
+    EndIf
     String[] names = _store.PlayerChildName
     If names == None || names.Length == 0
         Return
@@ -2392,6 +2428,173 @@ Bool Function AddChildStatic(String asChildName, Int aiChildFormID, Int aiMother
     Return True
 EndFunction
 
+; ===========================================================================
+; ADOPTION
+;
+; TAKING OVER A CHILD THAT ALREADY EXISTS, rather than emulating Hearthfire.
+; The backlog said adoption was out of scope and it was right about the half it
+; was answering: this mod does not need to ADOPT anyone, because Hearthfire and
+; every adoption overhaul already do that part well. What it could not do was
+; take a child the game had already given the player and treat them like one of
+; ours - a record, a life stage, a persona that grows.
+;
+; AN ADOPTED CHILD IS THE EASIEST CASE THIS MOD HAS, in the one way that has
+; cost it the most. Every child either fertility mod spawns is a runtime 0xFF
+; reference: it cannot be declared in a succession, and a linked reference to
+; one does not survive a save. An adopted child is a PERSISTENT reference with
+; a real plugin and local id. It is the only population here for which the
+; grown-up identity carry-over could ever work as designed.
+;
+; SO WE TOUCH AS LITTLE AS POSSIBLE. The adoption quest holds these children in
+; a quest ALIAS, and an alias package outranks anything on the actor - which is
+; precisely why the two children genuinely at home on the development save were
+; the two adopted ones, while thirty of ours were standing in a field. Kinship
+; does not move them, does not anchor them and does not send them home. It
+; records who they are to the player and how old they are. That is the whole
+; feature, and the restraint is the feature.
+; ===========================================================================
+
+Int Function SRC_ADOPTED() Global
+    Return 3
+EndFunction
+
+Bool Function IsAdopted(Int aiIdx) Global
+    { True for a child the player took in rather than fathered.
+
+      NEARLY EVERY READ OF THIS IS A REFUSAL, which is the shape of the whole
+      feature: the two stage inferences that would otherwise call them grown,
+      the four home paths that would fight their adoption quest for control of
+      where they live, and the confiscation path that would go looking through
+      a female player's own inventory for a baby that never existed.
+
+      The two that are not refusals are the decorator payloads, which carry it
+      to the prompt so a bio does not narrate a birth that did not happen, and
+      the pair in Forget/Restore, which hand a persistent NPC back cleanly. }
+    If aiIdx < 0
+        Return False
+    EndIf
+    Return JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".adopted", 0) == 1
+EndFunction
+
+Bool Function AdoptChildStatic(Int aiRefId, Int aiStage) Global
+    { The DLL's entry point. aiStage of -1 means "decide from the body".
+
+      SIGNED, like every other FormID crossing this boundary - Papyrus has no
+      unsigned type and Game.GetFormEx takes the full range. }
+    Return AdoptChild(Game.GetFormEx(aiRefId) as Actor, aiStage)
+EndFunction
+
+Bool Function AdoptChild(Actor akWho, Int aiStage = -1) Global
+    { Puts an actor who already exists onto the roster as the player's child.
+
+      FOR HEARTHFIRE ADOPTIONS FIRST, but nothing here is Hearthfire-specific
+      and deliberately so: it works for a child from any adoption overhaul, a
+      follower mod's orphan, or an NPC the player has simply decided is theirs.
+      Asking which quest owns them would make this depend on the one thing that
+      varies most between load orders.
+
+      THE STAGE STARTS AT CHILD, not newborn, and that is the whole shape of
+      the request. There is no birth to count from - the record is created
+      today for a person who has been alive the whole time - so the clock is
+      planted where the body already is and runs on from there: child, then
+      adolescent, then adult, exactly as for a child taken at birth.
+
+      REFUSES RATHER THAN GUESSES in all four ways it can go wrong, because
+      each one produces a record that is worse than no record:
+
+        - the player, who cannot be his own son;
+        - an actor already bound to a record, which would give one NPC two
+          identities - the same failure BindChildRef exists to refuse;
+        - a name already on the roster, which is keyed by name, so the second
+          one could never be found again;
+        - an actor with no name at all. }
+    If akWho == None
+        Diag(LOG_ERROR(), "Adopt: no actor.")
+        Return False
+    EndIf
+    If akWho == Game.GetPlayer()
+        Diag(LOG_ERROR(), "Adopt: that is you.")
+        Return False
+    EndIf
+    Int refId = akWho.GetFormID()
+    Int already = JsonUtil.GetIntValue(StoreFile(), "ref." + refId + ".child", -1)
+    If already >= 0
+        String had = JsonUtil.GetStringValue(StoreFile(), "child." + already + ".name", "?")
+        If JsonUtil.GetIntValue(StoreFile(), "child." + already + ".hidden", 0) == 1
+            Diag(LOG_WARN(), "Adopt: " + had + " is already on the roster as record " + \
+                already + ", tombstoned. Restore that record rather than making a " + \
+                "second one - the first still holds their parents and their stage.")
+        Else
+            Diag(LOG_WARN(), "Adopt: " + had + " is already record " + already + ".")
+        EndIf
+        Return False
+    EndIf
+    String nm = akWho.GetDisplayName()
+    If nm == ""
+        Diag(LOG_ERROR(), "Adopt: that actor has no name to key a record on.")
+        Return False
+    EndIf
+    If ChildIndex(nm) >= 0
+        Diag(LOG_ERROR(), "Adopt: there is already a child called '" + nm + "'. The " + \
+            "roster is keyed by name, so a second one could never be looked up. " + \
+            "Rename one of them first.")
+        Return False
+    EndIf
+
+    JsonUtil.StringListAdd(StoreFile(), "roster", nm, False)
+    Int idx = JsonUtil.StringListFind(StoreFile(), "roster", nm)
+    If idx < 0
+        Return False
+    EndIf
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".name", nm)
+    ; `born` IS WHEN THE RECORD WAS MADE and is honest about that here, exactly
+    ; as it is for a seeded child. It is not used to compute this child's stage -
+    ; stageBase is, and PlantStage sets it below - so nothing reads it as a
+    ; birthday. See StageForChild.
+    JsonUtil.SetFloatValue(StoreFile(), "child." + idx + ".born", Utility.GetCurrentGameTime())
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".hidden", 0)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".manual", 1)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".adopted", 1)
+    JsonUtil.SetIntValue(StoreFile(), "child." + idx + ".source", SRC_ADOPTED())
+    JsonUtil.SetStringValue(StoreFile(), "child." + idx + ".gender", GenderWord(akWho))
+    JsonUtil.Save(StoreFile())
+
+    BindChildRef(akWho, idx)
+    MarkChildActor(akWho, idx)
+
+    ; THE PLAYER IS THE PARENT, on whichever side they are. Taken from sex
+    ; rather than assumed, the same rule the rest of the store follows - a
+    ; female player is a mother, not a father with a different pronoun.
+    Actor pc = Game.GetPlayer()
+    Int isFather = 1
+    If pc.GetActorBase() != None && pc.GetActorBase().GetSex() == 1
+        isFather = 0
+    EndIf
+    SetParentByIdStatic(nm, pc.GetFormID(), isFather)
+
+    Int stage = aiStage
+    If stage < 0 || stage > STAGE_ADULT()
+        ; THE BODY ANSWERS WHEREVER IT CAN, which is the same rule the stage
+        ; clock uses. IsChild reads the race off the 3D, so it is only
+        ; meaningful for an actor that is loaded - and an adoption happens with
+        ; the child standing in front of you, which is exactly when it is.
+        stage = 3   ; child
+        If akWho.Is3DLoaded() && !akWho.IsChild()
+            stage = STAGE_ADULT()
+        EndIf
+    EndIf
+    PlantStage(idx, stage)
+
+    RefreshChildTotal()
+    Diag(LOG_INFO(), "Adopted " + nm + " as record " + idx + ", planted at " + \
+        StageName(stage) + ". Kinship records them and ages them; it does NOT " + \
+        "move them or manage their home - their adoption quest already does.")
+    If Notify()
+        Debug.Notification("[Kinship] " + nm + " is now recorded as your child")
+    EndIf
+    Return True
+EndFunction
+
 String Function GenderWord(Actor akActor) Global
     If akActor == None || akActor.GetActorBase() == None
         Return ""
@@ -2511,6 +2714,30 @@ Bool Function ForgetAtIndex(Int aiIndex, String asLabel) Global
         "child." + aiIndex + ".refId", 0)) as Actor
     If kid != None
         StorageUtil.SetIntValue(kid, "SNKin_IsPlayerChild", 0)
+        ; AN ADOPTED CHILD IS GIVEN BACK PROPERLY, and this is the one kind
+        ; where that matters. Every other child on this roster is a runtime
+        ; spawn: forget it and the reference is gone, so whatever stayed
+        ; stamped on it went with it. An adopted child is a PERSISTENT NPC who
+        ; carries on living in the world - Lucia does not stop existing because
+        ; a record was tombstoned - and a stale SNKin_ChildStage on her would
+        ; keep answering for a record that no longer speaks.
+        ;
+        ; SNKin_Bound is cleared for adopted children ONLY. BindSpawnedChildren
+        ; walks Fertility Mode's own array and would simply re-bind one of its
+        ; spawns on the next sweep, once per sweep, forever; it can never see a
+        ; vanilla NPC, so there is nothing to re-bind here.
+        ;
+        ; UNSET RATHER THAN ZEROED for the three that are read as values. A
+        ; stage of 0 is `newborn` and a plasticity of 0 is a person nobody can
+        ; reach - both are claims, and this is the absence of a claim. Removing
+        ; the entry hands every consumer back its own default, which is what
+        ; they had before this mod ever saw the actor.
+        If IsAdopted(aiIndex)
+            StorageUtil.SetIntValue(kid, "SNKin_Bound", 0)
+            StorageUtil.UnsetIntValue(kid, "SNKin_ChildStage")
+            StorageUtil.UnsetIntValue(kid, "SNKin_ChildPlasticity")
+            StorageUtil.UnsetIntValue(kid, "SNKin_ChildRecordId")
+        EndIf
     EndIf
     RefreshParentCount(mId)
     RefreshParentCount(fId)
@@ -2536,6 +2763,16 @@ Bool Function RestoreChildStatic(String asChildName) Global
         "child." + idx + ".refId", 0)) as Actor
     If kid != None
         StorageUtil.SetIntValue(kid, "SNKin_IsPlayerChild", 1)
+        ; PUTS BACK EXACTLY WHAT FORGETTING TOOK OFF. Only an adopted child
+        ; loses its binding on the way out - see ForgetAtIndex - and without
+        ; this the record would come back while the decorator still could not
+        ; find it from the actor, which is a restore in name only. The stage
+        ; keys re-publish on the next sweep from the record, which is where
+        ; they came from.
+        If IsAdopted(idx)
+            BindChildRef(kid, idx)
+            MarkChildActor(kid, idx)
+        EndIf
     EndIf
     RefreshChildTotal()
     Diag(LOG_INFO(), "RestoreChild: " + asChildName + " is visible again.")
@@ -2936,6 +3173,8 @@ String Function SourceName(Int aiSource) Global
         Return "Fertility Mode"
     ElseIf aiSource == SRC_BFNG()
         Return "Beeing Female"
+    ElseIf aiSource == SRC_ADOPTED()
+        Return "adoption"
     EndIf
     Return "unknown"
 EndFunction
@@ -4427,7 +4666,11 @@ Function ReanchorAll() Global
     Int unset = 0
     Int reverted = 0
     While i < n
-        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+        ; ADOPTED CHILDREN ARE SKIPPED ENTIRELY, not counted as unanchored.
+        ; Nothing ever anchors them - their adoption quest owns where they live -
+        ; so including them would only inflate the "have none recorded" number
+        ; with children that number is not about.
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1 && !IsAdopted(i)
             Actor kid = Game.GetFormEx(JsonUtil.GetIntValue(StoreFile(), \
                 "child." + i + ".refId", 0)) as Actor
             If kid != None
@@ -4799,6 +5042,13 @@ Function NoteHome(Int aiIdx, Actor akKid) Global
     If akKid == None || aiIdx < 0 || !HasSeverActions()
         Return
     EndIf
+    ; NOTHING TO PUBLISH FOR AN ADOPTED CHILD. Their home is decided by the mod
+    ; that adopted them, nothing here can act on it, and the panel says so in
+    ; the column instead. Copying a value across every sweep that no code path
+    ; is allowed to use would be a native call spent to mislead.
+    If IsAdopted(aiIdx)
+        Return
+    EndIf
     ; A HOME SET BY HAND IS NOT OVERWRITTEN. The player walked into a room to
     ; say "here"; SeverActions inferring something else later does not get to
     ; win that argument.
@@ -4847,6 +5097,22 @@ Int Function SendChildHome(Int aiIdx) Global
     { Moves one child to the home it is already recorded as living in.
 
       1 moved inside, 2 moved to the doorstep, 0 could not. }
+    ; AN ADOPTED CHILD IS NOT OURS TO MOVE, and this refusal is load-bearing
+    ; rather than cautious.
+    ;
+    ; Their adoption quest holds them in an ALIAS, and an alias package outranks
+    ; anything on the actor. That is not a theory: the package diagnostic that
+    ; produced the 1.8.2 re-anchor found exactly two children genuinely at home
+    ; out of thirty-two, and both were adopted through Hearthfire. What already
+    ; works is the alias. Applying our own sandbox override on top would put a
+    ; priority-99 package underneath it - a fight we would lose - and the anchor
+    ; marker would be placed for nothing.
+    If IsAdopted(aiIdx)
+        Diag(LOG_INFO(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+            " is an adopted child, so their own adoption handles where they live. " + \
+            "Kinship does not move them - move them the way that mod provides.")
+        Return 0
+    EndIf
     Int rid = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".refId", 0)
     If rid == 0
         Return 0
@@ -5038,6 +5304,14 @@ Bool Function SetHomeHereStatic(String asChildName) Global
         Diag(LOG_ERROR(), "SetHomeHere: no child named '" + asChildName + "'.")
         Return False
     EndIf
+    ; Same refusal as SendChildHome, and for the same reason: a home recorded
+    ; here would apply a package this child's adoption quest outranks, and the
+    ; marker would be placed for nothing. See SendChildHome.
+    If IsAdopted(idx)
+        Diag(LOG_INFO(), asChildName + " is an adopted child - their adoption " + \
+            "decides where they live, and it outranks anything Kinship would apply.")
+        Return False
+    EndIf
     Actor player = Game.GetPlayer()
     Static xm = Game.GetFormFromFile(0x0000003B, "Skyrim.esm") as Static
     If xm == None
@@ -5112,7 +5386,11 @@ Int Function SendAllChildrenHomeStatic() Global
     Int n = JsonUtil.StringListCount(StoreFile(), "roster")
     Int i = 0
     While i < n
-        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1
+        ; Adopted children are skipped here rather than refused one at a time,
+        ; so "sent 12 home" is not accompanied by a line of log for every child
+        ; this button was never going to move. SendChildHome refuses them too -
+        ; this only keeps the sweep quiet about it.
+        If JsonUtil.GetIntValue(StoreFile(), "child." + i + ".hidden", 0) != 1 && !IsAdopted(i)
             Int how = SendChildHome(i)
             If how > 0
                 moved += 1
@@ -5745,6 +6023,15 @@ Function CheckBabyItem(Int aiIdx, Int aiStage) Global
     If SourceOwnsGrowth(ChildSource(aiIdx))
         Return
     EndIf
+    ; THERE WAS NEVER A PREGNANCY. An adopted child cannot reach here through
+    ; any supported route - they are planted at child or later, and the stage
+    ; test below stops at infant - but the consequence if one ever did is bad
+    ; enough to guard explicitly: the recorded parent of an adopted child is the
+    ; PLAYER, so on a female playthrough this would go looking through her own
+    ; inventory for a baby to confiscate.
+    If IsAdopted(aiIdx)
+        Return
+    EndIf
     ; ONLY WHILE IT COULD STILL FIRE. Past infant the child is already older
     ; than any BabyDuration worth setting, so there is nothing left to pre-empt
     ; and no reason to keep looking.
@@ -5922,6 +6209,7 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
                 EndIf
             ElseIf akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1 \
                     && StorageUtil.GetIntValue(akKid, "SNKin_OurSpawn", 0) != 1 \
+                    && !IsAdopted(aiIdx) \
                     && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".ourSpawn", 0) != 1
                 planted = STAGE_ADULT()
             EndIf
@@ -5982,8 +6270,16 @@ Function RefreshChildStage(Int aiIdx, Actor akKid) Global
     ; started spawning children itself - SpawnOwnedChild calls BindChildRef - so
     ; SNKin_OurSpawn marks the ones WE placed. Bound and grown are no longer the
     ; same question.
+    ; AN ADOPTED CHILD IS EXCLUDED OUTRIGHT, and this is the trap the whole
+    ; feature would otherwise have walked into. Adopting binds the reference,
+    ; and binding sets SNKin_Bound - so an adopted child who walked into an
+    ; unloaded cell would read as "summoned adult" on the very next sweep and
+    ; be planted at adult, hours after being recorded as a nine-year-old. The
+    ; flag never meant "grown"; it meant "Fertility Mode summoned this one",
+    ; and there are now three ways to be bound that are not that.
     ElseIf akKid != None && StorageUtil.GetIntValue(akKid, "SNKin_Bound", 0) == 1 \
             && StorageUtil.GetIntValue(akKid, "SNKin_OurSpawn", 0) != 1 \
+            && !IsAdopted(aiIdx) \
             && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".ourSpawn", 0) != 1 \
             && JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".manualStage", 0) != 1
         grown = True

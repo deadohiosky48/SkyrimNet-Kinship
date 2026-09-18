@@ -41,6 +41,12 @@ namespace Kinship::Store {
         // indistinguishable from a broken one - which it was mistaken for
         // twice before this field existed.
         bool needsName = false;
+        // Taken in rather than born: a child that already existed in the world
+        // when the player claimed them. The panel hides the home controls for
+        // these - their adoption quest holds them in an alias, which outranks
+        // any package this mod could apply - and marks the row, because "this
+        // one is not ours to move" is otherwise invisible.
+        bool adopted = false;
         // Where this child lives, copied out of SeverActions' co-save by the
         // Papyrus side - the panel cannot read that itself. Empty means no home
         // is recorded, which is the case worth showing rather than hiding.

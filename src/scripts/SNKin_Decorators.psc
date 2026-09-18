@@ -115,6 +115,41 @@ String Function GetKinship(Actor akActor) Global
         EndIf
     EndIf
 
+    ; Child, by REFERENCE, with no flag involved - and this is the path an
+    ; ADOPTED child needs, because neither of the two above can be trusted to
+    ; find one.
+    ;
+    ; The first reads SNKin_Bound, which is a StorageUtil value and therefore
+    ; lives in the CO-SAVE: load a save made before the adoption and the flag is
+    ; gone while the record remains, exactly as this mod already documents for
+    ; SNKin_IsPlayerChild. The sweep would put it back within the hour, and an
+    ; NPC whose own bio silently forgets who raised them for an hour is not a
+    ; bug anyone would report as one.
+    ;
+    ; The second cannot help: it is guarded on a DYNAMIC reference on purpose,
+    ; because a display-name match against a static NPC would hand a stranger
+    ; the player's parentage - there is an Inga in Skyrim and an Inga on this
+    ; roster. An adopted child is always static.
+    ;
+    ; So this matches on the reference id itself, which is exact, and reads the
+    ; mapping out of OUR OWN store rather than the co-save. One keyed lookup in
+    ; a document JsonUtil already holds in memory.
+    ;
+    ; STATIC REFERENCES ONLY, and that restriction is not symmetry with the
+    ; block above - it is the whole safety of this one. A 0xFF reference is
+    ; RECYCLED: the engine hands the same id to a later spawn once the first is
+    ; gone, so a stale ref.<id> row left by a child who no longer exists would
+    ; introduce the player's daughter to a summoned wolf. A static id is never
+    ; reissued, so the mapping either means what it says or is absent.
+    If !SNKin_Bridge.IsDynamicRef(akActor.GetFormID())
+        Int byRef = JsonUtil.GetIntValue(SNKin_Bridge.StoreFile(), \
+            "ref." + akActor.GetFormID() + ".child", -1)
+        If byRef >= 0
+            SNKin_Bridge.MarkChildActor(akActor, byRef)
+            Return ChildPayload(byRef)
+        EndIf
+    EndIf
+
     ; Then parent - either one.
     ;
     ; Asked of the STORE rather than of a flag on the actor. SNKin_IsMother
@@ -199,7 +234,18 @@ String Function ChildPayload(Int aiIdx) Global
         EndIf
     EndIf
 
+    ; ADOPTED, AND THE PROMPT MUST NOT BE LEFT TO GUESS. The child's block says
+    ; "she bore you" of a recorded mother, which for a child the player took in
+    ; is a confident statement about something that never happened - and it
+    ; would be stated in that child's own bio, as fact, on every render. An Int
+    ; rather than a boolean for the same reason as every other field here.
+    Int adopted = 0
+    If SNKin_Bridge.IsAdopted(aiIdx)
+        adopted = 1
+    EndIf
+
     Return "{\"known\":1,\"role\":\"child\"" + \
+        ",\"adopted\":" + adopted + \
         stagePart + \
         ",\"twinCount\":" + sibN + \
         ",\"twins\":[" + sibs + "]" + \
@@ -265,8 +311,16 @@ String Function ParentPayload(Actor akActor) Global
                     ",\"stageNum\":" + kst
             EndIf
         EndIf
+        ; The parent's side needs it as much as the child's: "whom you bore" is
+        ; the wrong verb for a child who was taken in, and it is the player's
+        ; own spouse or steward who would say it.
+        Int kidAdopted = 0
+        If SNKin_Bridge.IsAdopted(idx)
+            kidAdopted = 1
+        EndIf
         kids += "{\"name\":\"" + JsonEscape(JsonUtil.GetStringValue(f, "child." + idx + ".name", "")) + "\"" + \
             kidStage + \
+            ",\"adopted\":" + kidAdopted + \
             ",\"relation\":\"" + relation + "\"" + \
             ",\"otherParent\":\"" + JsonEscape(otherName) + "\"" + \
             ",\"gender\":\"" + JsonEscape(JsonUtil.GetStringValue(f, "child." + idx + ".gender", "")) + "\"" + \

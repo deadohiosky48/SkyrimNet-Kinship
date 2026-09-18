@@ -185,6 +185,7 @@ namespace Kinship::Store {
             c.owned = Get<std::int32_t>(root, "int", key + "owned", 0) == 1 ||
                       Get<std::int32_t>(root, "int", key + "babyTaken", 0) == 1;
             c.needsName = Get<std::int32_t>(root, "int", key + "needsName", 0) == 1;
+            c.adopted = Get<std::int32_t>(root, "int", key + "adopted", 0) == 1;
             c.home = Get<std::string>(root, "string", key + "home", "");
             c.candidateIds = GetIntList(root, key + "candidates");
             c.candidateNames = GetStringList(root, key + "candidateNames");

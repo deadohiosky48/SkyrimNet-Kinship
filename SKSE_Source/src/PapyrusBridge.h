@@ -81,6 +81,16 @@ namespace Kinship::PapyrusBridge {
     // one. Refused for newborns and infants, which have no body by design.
     bool SpawnChildBody(const std::string& aChildName);
 
+    // Records an actor who already exists as the player's child.
+    //
+    // For Hearthfire adoptions and every other kind - nothing on the Papyrus
+    // side asks which mod adopted them, because that is the part of a load
+    // order that varies most. aStage of -1 means "decide from the body", which
+    // lands on child for a child-bodied actor.
+    //
+    // The FormID is SIGNED, like every other one crossing this boundary.
+    bool AdoptChild(std::int32_t aRefFormID, std::int32_t aStage);
+
     // Tombstones a roster row: hidden from the panel, unlinked from both
     // parents, and no longer the player's child as far as anything reads.
     //
