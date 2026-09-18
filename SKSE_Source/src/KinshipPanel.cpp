@@ -143,14 +143,37 @@ namespace Kinship::Panel {
                 "The child's FormID is optional: without it the parents still know about "
                 "the child, but the child's own dialogue will not until the name is matched "
                 "to a spawned actor.");
+            // LABELLED IN A COLUMN, because the two parent dropdowns are the
+            // same widget as the table's Mother and Father cells - where the
+            // COLUMN HEADER names them. Lifted out of the table they carried no
+            // label at all: two identical boxes reading "(unknown)", with
+            // nothing to say which was which or that they were parents.
+            //
+            // The label cannot move into DrawParentCombo, which would print
+            // "Mother" beside every mother in all forty-eight rows. So the
+            // caller labels, and a fixed offset keeps the four controls in one
+            // column rather than stepping in and out with the text width.
+            const float kFieldX = 74.0f;
+
+            ImGui::TextUnformatted("Name");
+            ImGui::SameLine(kFieldX);
             ImGui::SetNextItemWidth(180.0f);
             ImGui::InputTextWithHint("##name", "child's name", g_newName, sizeof(g_newName));
             ImGui::SameLine();
+            ImGui::TextUnformatted("FormID");
+            ImGui::SameLine();
             ImGui::SetNextItemWidth(90.0f);
-            ImGui::InputTextWithHint("##kid", "child FormID", g_newChildHex, sizeof(g_newChildHex),
+            // The hint the box was too narrow to show. It said "child FormID"
+            // and rendered as "child For", which is worse than nothing - it
+            // read as a truncated label rather than as an optional field.
+            ImGui::InputTextWithHint("##kid", "optional", g_newChildHex, sizeof(g_newChildHex),
                                      ImGuiInputTextFlags_CharsHexadecimal);
 
+            ImGui::TextUnformatted("Mother");
+            ImGui::SameLine(kFieldX);
             DrawParentCombo("newmother", 1, "", g_newMother, g_newMotherHex, sizeof(g_newMotherHex));
+            ImGui::TextUnformatted("Father");
+            ImGui::SameLine(kFieldX);
             DrawParentCombo("newfather", 0, "", g_newFather, g_newFatherHex, sizeof(g_newFatherHex));
 
             const bool ok = g_newName[0] != '\0';
@@ -465,7 +488,10 @@ namespace Kinship::Panel {
             // offer people it already knows, and a brand new NPC would still
             // force a trip across Skyrim to use the crosshair.
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(70.0f);
+            // 92, not 70: at 70 the hint rendered as "FormIt" - a clipped word
+            // reads as a broken label rather than as a prompt, and this box is
+            // the one control in the panel nobody would guess the purpose of.
+            ImGui::SetNextItemWidth(92.0f);
             if (ImGui::InputTextWithHint("##hex", "FormID", aHexBuf, aHexLen,
                                          ImGuiInputTextFlags_CharsHexadecimal |
                                          ImGuiInputTextFlags_EnterReturnsTrue)) {

@@ -1,6 +1,6 @@
 plugin:
   name: "SkyrimNet Kinship"
-  version: "1.9.2"
+  version: "1.9.3"
   description: "Makes parentage permanent and visible to SkyrimNet — a child knows who its parents are, and a mother never forgets the child she bore. Works with Fertility Mode Reloaded, Fertility Mode v3 and Beeing Female NG, and with adopted children on their own."
   icon: "🍼"
 
