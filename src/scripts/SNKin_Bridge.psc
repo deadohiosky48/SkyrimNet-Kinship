@@ -5967,18 +5967,77 @@ Int Function TakeBabyItem(Int aiIdx) Global
         EndIf
     EndWhile
 
-    ; CLEAR THE CLOCK EVEN IF THE ITEM WAS ALREADY GONE. Without this, the
-    ; BabyAdded > 0 gate keeps CheckBabyGrowth running every poll for this
-    ; mother forever - a full inventory scan plus a Debug.Trace on every pass,
-    ; and an FMR_BabyStatus event every game day advertising a baby that will
-    ; never grow. Clearing it is what FMR itself does once a baby resolves, and
-    ; CheckInactiveConditions only guards the mother while the baby is younger
-    ; than BabyDuration, so this changes nothing that day ten would not.
+    String nm = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?")
+    Float babyWindow = BabyDurationDays()
+    If babyWindow <= 0.0
+        babyWindow = 14.0
+    EndIf
+
+    ; `taken` WAS COUNTED AND NEVER READ, AND THAT COST A BIRTH.
+    ;
+    ; Removing nothing still zeroed the clock, still logged "Took Fertility
+    ; Mode's baby item", still returned 1 - and CheckBabyItem then wrote
+    ; babyTaken and never asked again. Measured: Lisette delivered at game time
+    ; 234.2651, this ran at 234.2859 and reported success, and Fertility Mode
+    ; matured the baby itself at 244.3550 - 10.09 days, its BabyDuration to the
+    ; hour, counted from the birth. The player got FMR's naming prompt for a
+    ; child this mod had already named.
+    ;
+    ; The item cannot have been in her inventory when we looked: FMR gates the
+    ; whole spawn on finding one, so reaching its prompt proves it was there at
+    ; day ten. Fertility Mode stamps BabyAdded as labour BEGINS and hands the
+    ; armor over in GiveBirth afterwards, so a claim that lands between the two
+    ; sees a stamped clock and an empty inventory - zeroes a clock FMR then
+    ; re-stamps, and takes nothing.
+    If taken == 0
+        If ownBorn > 0.0 && (Utility.GetCurrentGameTime() - ownBorn) < babyWindow
+            ; ASK AGAIN NEXT SWEEP RATHER THAN CLAIMING THE FIELD. And do NOT
+            ; zero the clock on the way out: while the item is still to come,
+            ; that clock is the only thing that tells us the birth is real, and
+            ; zeroing it is what made the failure invisible.
+            Diag(LOG_DEBUG(), nm + ": " + mother.GetDisplayName() + " is not carrying " + \
+                "the baby item yet - Fertility Mode stamps its clock at labour and " + \
+                "hands the item over afterwards. Asking again next sweep.")
+            Return 0
+        EndIf
+        ; PAST FMR'S OWN WINDOW, so the item is not coming. Clear the clock -
+        ; see below for why - and say plainly that nothing was confiscated,
+        ; rather than reporting a take that did not happen.
+        added[mi] = 0.0
+        Diag(LOG_WARN(), nm + ": nothing was confiscated - " + mother.GetDisplayName() + \
+            " is carrying no baby item, and " + babyWindow + " days have passed. " + \
+            "Fertility Mode is probably not in baby-item birth mode. Its clock has " + \
+            "been cleared so it stops polling her, but this mod did not end that " + \
+            "childhood and does not owe the child a body.")
+        Return 2
+    EndIf
+
+    ; CLEAR THE CLOCK. Without this, the BabyAdded > 0 gate keeps
+    ; CheckBabyGrowth running every poll for this mother forever - a full
+    ; inventory scan plus a Debug.Trace on every pass, and an FMR_BabyStatus
+    ; event every game day advertising a baby that will never grow. Clearing it
+    ; is what FMR itself does once a baby resolves, and CheckInactiveConditions
+    ; only guards the mother while the baby is younger than BabyDuration, so
+    ; this changes nothing that day ten would not.
     added[mi] = 0.0
 
-    Diag(LOG_WARN(), "Took Fertility Mode's baby item from " + \
-        mother.GetDisplayName() + " for " + \
-        JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+    ; READ IT BACK. This write rests on Papyrus arrays being references, so
+    ; that `added[mi] = 0.0` reaches FMR's own storage exactly as its
+    ; `Storage.BabyAdded[index] = 0.0` does. That is believed rather than
+    ; proven, and it is the OTHER thing that could have produced the failure
+    ; above - a take that removed the item while the clock kept running. One
+    ; property read settles which, the next time it happens.
+    Float[] after = store.BabyAdded
+    If mi < after.Length && after[mi] > 0.0
+        Diag(LOG_ERROR(), nm + ": the baby item was removed from " + \
+            mother.GetDisplayName() + " but Fertility Mode's clock did NOT clear - " + \
+            "it still reads " + after[mi] + ". The array write did not reach its " + \
+            "storage. Expect FMR to keep polling her; the spawn itself cannot " + \
+            "happen, because the item is gone.")
+    EndIf
+
+    Diag(LOG_WARN(), "Took " + taken + " Fertility Mode baby item(s) from " + \
+        mother.GetDisplayName() + " for " + nm + \
         ". This mod owns that childhood now, and FMR will not spawn the child " + \
         "on its own timer. THIS CANNOT BE UNDONE.")
     ; 1, NOT 2 - see the contract above. This is the branch that cleared FMR's
@@ -6007,20 +6066,56 @@ Function CheckBabyItem(Int aiIdx, Int aiStage) Global
     If IsAdopted(aiIdx)
         Return
     EndIf
-    ; ONLY WHILE IT COULD STILL FIRE. Past infant the child is already older
-    ; than any BabyDuration worth setting, so there is nothing left to pre-empt
-    ; and no reason to keep looking.
-    If aiStage > 1
+    ; ONLY WHILE FERTILITY MODE'S CLOCK COULD STILL FIRE, and that is the
+    ; window - not our stage, and not whether we have already tried once.
+    ;
+    ; CONFISCATION USED TO BE ONE SHOT PER CHILD: any non-zero answer wrote
+    ; babyTaken and this returned for good. A successful take is not permanent,
+    ; because FMR stamps its clock at labour and hands the item over in
+    ; GiveBirth afterwards - so a claim landing between the two can take an item
+    ; that is then re-issued, and nothing looked again. That is how Lisette's
+    ; son reached FMR's day-ten naming prompt with babyTaken=1 on his record.
+    ;
+    ; So a claimed child is re-checked every sweep until it is past
+    ; BabyDuration, which is the only interval in which FMR can act. One
+    ; TrackedActors.Find and one array read per claimed child per sweep, for
+    ; about ten game days each.
+    Float babyWindow = BabyDurationDays()
+    If babyWindow <= 0.0
+        babyWindow = 14.0
+    EndIf
+    Float babyBorn = JsonUtil.GetFloatValue(StoreFile(), "child." + aiIdx + ".born", 0.0)
+    Bool canStillFire = babyBorn > 0.0 && \
+        (Utility.GetCurrentGameTime() - babyBorn) < babyWindow
+    Int had = JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".babyTaken", 0)
+    ; 2 IS FINAL. It means there was never an item in play - FMR is on the
+    ; soul-gem or do-nothing setting, or it is not tracking her - and that does
+    ; not change during one childhood.
+    If had == 2
         Return
     EndIf
-    If JsonUtil.GetIntValue(StoreFile(), "child." + aiIdx + ".babyTaken", 0) != 0
+    If !canStillFire && (had == 1 || aiStage > 1)
         Return
     EndIf
     Int outcome = TakeBabyItem(aiIdx)
-    If outcome != 0
-        JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".babyTaken", outcome)
-        JsonUtil.Save(StoreFile())
+    If outcome == 0
+        Return
     EndIf
+    ; NEVER DOWNGRADE 1 TO 2. Re-checking a child whose item we already took
+    ; finds a cleared clock, which TakeBabyItem correctly reports as "nothing
+    ; to take" - and writing that over the 1 would forget that WE ended this
+    ; childhood, which is the flag the spawn gate reads to decide the child is
+    ; owed a body.
+    If had == 1 && outcome != 1
+        Return
+    EndIf
+    If had == 1 && outcome == 1
+        Diag(LOG_WARN(), JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".name", "?") + \
+            ": Fertility Mode issued another baby item after the first was taken. " + \
+            "Taken again - this is the race that let one of these through before.")
+    EndIf
+    JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".babyTaken", outcome)
+    JsonUtil.Save(StoreFile())
 EndFunction
 
 Int Function StageForChild(Int aiIdx) Global
