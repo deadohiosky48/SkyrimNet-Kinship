@@ -677,39 +677,96 @@ Function Sweep()
     If lockHeld > 0.0 && lockHeld <= lockNow && (lockNow - lockHeld) < 30.0
         Return
     EndIf
+    If lockHeld > 0.0 && lockHeld <= lockNow
+        ReportUnfinishedSweep(lockNow - lockHeld)
+    EndIf
     StorageUtil.SetFloatValue(None, "SNKin_SweepLock", lockNow)
     _sweepingSince = lockNow
 
+    SweepAt("MigrateStore")
     MigrateStore()
     ; AFTER the schema migration, which may already have swept, and before
     ; anything reads a parent id. A reshuffled load order breaks records
     ; silently; this is the only thing that notices.
+    SweepAt("CheckLoadOrderDrift")
     CheckLoadOrderDrift()
+    SweepAt("SeedPass")
     SeedPass()
+    SweepAt("RememberPeople")
     RememberPeople()
     ; AFTER RememberPeople, never before: it resolves names against the roster,
     ; so the roster has to be current or a name that could have been linked this
     ; sweep is left for the next one.
+    SweepAt("RepairParentIds")
     RepairParentIds()
+    SweepAt("NoteDeliveries")
     NoteDeliveries()
+    SweepAt("NoteNewChildren")
     NoteNewChildren()
     ; Beeing Female's children arrive as spawned actors rather than through a
     ; registration array, so they are picked up by walking its own live list.
     ; Returns immediately when Beeing Female is absent.
+    SweepAt("NoteBfChildren")
     NoteBfChildren()
+    SweepAt("DetectBfGrowUp")
     DetectBfGrowUp()
     ; Babies already on the way when the feature was switched on. Runs before
     ; the naming prompt so an adopted birth can be named in the same sweep.
+    SweepAt("AdoptInFlightBirths")
     AdoptInFlightBirths()
     ; Asks for one deferred name, and only when the player is able to answer.
+    SweepAt("PromptPendingNames")
     PromptPendingNames()
+    SweepAt("BindSpawnedChildren")
     BindSpawnedChildren()
     ; LAST, and it has to be. It publishes what the passes above just decided,
     ; so anything running earlier would export the previous sweep's answer.
+    SweepAt("RefreshKinshipExports")
     RefreshKinshipExports()
 
+    SweepAt("")
     _sweepingSince = 0.0
     StorageUtil.SetFloatValue(None, "SNKin_SweepLock", 0.0)
+EndFunction
+
+Function SweepAt(String asStep)
+    { Where the running check has got to. Read only if it never finishes. }
+    StorageUtil.SetStringValue(None, "SNKin_SweepStep", asStep)
+    If asStep == ""
+        StorageUtil.SetFormValue(None, "SNKin_SweepWho", None)
+    EndIf
+EndFunction
+
+Function ReportUnfinishedSweep(Float afSeconds)
+    { Names where an unfinished check stopped, when a later one takes over.
+
+      THE SENNA INVESTIGATION TOOK A 100MB PAPYRUS LOG TO ANSWER a question
+      this line answers directly. A check that waits on a locked actor never
+      errors and never returns, so from the outside it looks like the mod simply
+      went quiet.
+
+      Worded as "has not finished" rather than "is stuck": under heavy script
+      lag a check can genuinely take longer than the thirty seconds the lock
+      allows, and the same line then means slow, not blocked. A repeat naming
+      the same character is the signature of blocked.
+
+      The character is shown as the Form itself, which Papyrus prints as its
+      FormID without calling anything on it - asking a locked actor for their
+      name would stop this check in the same place. }
+    String stepName = StorageUtil.GetStringValue(None, "SNKin_SweepStep", "")
+    If stepName == ""
+        stepName = "an unknown step"
+    EndIf
+    Form who = StorageUtil.GetFormValue(None, "SNKin_SweepWho")
+    String msg = "The previous check has not finished after " + (afSeconds as Int) + \
+        "s. It was last at " + stepName
+    If who != None
+        msg += ", waiting on " + who + ". If this repeats naming the same " + \
+            "character, another mod's script is holding them, and anything else " + \
+            "that touches them will stall too - look them up with 'prid' plus " + \
+            "that FormID in the console"
+    EndIf
+    Diag(LOG_WARN(), msg + ". Starting a fresh check.")
 EndFunction
 
 Function RememberPeople()
@@ -741,15 +798,16 @@ Function RememberPeople()
     ; the father of nearly every child in the store, yet appeared in no
     ; dropdown, because the roster was seeded only from FMR's arrays and from
     ; recorded fatherIds, which were still 0 on older records.
-    RememberPerson(Game.GetPlayer())
+    SeedSeen()
+    Int seenBefore = JsonUtil.FormListCount(StoreFile(), SEEN_KEY())
+    Int added = RememberOnce(Game.GetPlayer())
 
     ; BOTH of FMR's arrays. TrackedActors holds the women it follows cycles
     ; for; TrackedFathers holds the men it has recorded as fathers. Reading only
     ; the first is why the Father dropdown offered nothing but women - there
     ; were no men in the roster at all.
-    Int added = 0
     If _store != None
-        added = RememberFrom(_store.TrackedActors, 0)
+        added = RememberFrom(_store.TrackedActors, added)
         added = RememberFrom(_store.TrackedFathers, added)
     EndIf
     ; Also seed from parents ALREADY recorded, so the editor is useful on the
@@ -757,32 +815,30 @@ Function RememberPeople()
     ; the roster starts empty and every mother recorded before today - Kayla,
     ; Camilla, Elisif and the rest - would be unavailable in the dropdown
     ; despite being right there in the store.
+    ;
+    ; COUNTED ONLY WHEN SOMEONE IS ACTUALLY NEW. This used to add one for every
+    ; recorded parent whether or not they were already known, so every hourly
+    ; check announced "Remembered 112 new person/people" about a roster that had
+    ; not changed in days.
     Int n = JsonUtil.StringListCount(StoreFile(), "roster")
     Int c = 0
     While c < n
         Int mId = JsonUtil.GetIntValue(StoreFile(), "child." + c + ".motherId", 0)
         If mId != 0
-            Actor m = Game.GetFormEx(mId) as Actor
-            If m != None
-                AppendPerson(m)
-                added += 1
-            EndIf
+            added += RememberOnce(Game.GetFormEx(mId) as Actor)
         EndIf
         Int fId = JsonUtil.GetIntValue(StoreFile(), "child." + c + ".fatherId", 0)
         If fId != 0
-            Actor f = Game.GetFormEx(fId) as Actor
-            If f != None
-                AppendPerson(f)
-                added += 1
-            EndIf
+            added += RememberOnce(Game.GetFormEx(fId) as Actor)
         EndIf
         c += 1
     EndWhile
 
-    If added > 0
+    If added > 0 || JsonUtil.FormListCount(StoreFile(), SEEN_KEY()) != seenBefore
         JsonUtil.Save(StoreFile())
-        Diag(LOG_INFO(), "Remembered " + added + " new person/people for the parent editor (" + \
-            JsonUtil.IntListCount(StoreFile(), "people.ids") + " known).")
+    EndIf
+    If added > 0
+        Diag(LOG_INFO(), "Remembered " + added + " new person/people for the parent editor (" +             JsonUtil.IntListCount(StoreFile(), "people.ids") + " known).")
     EndIf
 EndFunction
 
@@ -796,17 +852,83 @@ Int Function RememberFrom(Form[] akSource, Int aiAlready)
     Int added = aiAlready
     Int i = 0
     While i < akSource.Length
-        Actor a = akSource[i] as Actor
-        If a != None
-                Int before = JsonUtil.IntListCount(StoreFile(), "people.ids")
-                AppendPerson(a)
-                If JsonUtil.IntListCount(StoreFile(), "people.ids") > before
-                    added += 1
-                EndIf
-            EndIf
+        added += RememberOnce(akSource[i] as Actor)
         i += 1
     EndWhile
     Return added
+EndFunction
+
+String Function SEEN_KEY() Global
+    { Everyone the hourly passes have already handed to AppendPerson, as Forms. }
+    Return "people.seen"
+EndFunction
+
+Function SeedSeen() Global
+    { Fills the seen list from the roster that already exists, ONCE.
+
+      Without this the first check after updating would meet all two hundred
+      known people again - calling into every one of them - and on a save where
+      one of them is locked, that first check is exactly where it would stop.
+      Game.GetFormEx takes an id and calls nothing on the actor it returns, so
+      this reaches everyone already known without touching any of them. }
+    If JsonUtil.GetIntValue(StoreFile(), "peopleSeenSchema", 0) == 1
+        Return
+    EndIf
+    Int n = JsonUtil.IntListCount(StoreFile(), "people.ids")
+    Int i = 0
+    While i < n
+        Form f = Game.GetFormEx(JsonUtil.IntListGet(StoreFile(), "people.ids", i))
+        If f != None
+            JsonUtil.FormListAdd(StoreFile(), SEEN_KEY(), f, False)
+        EndIf
+        i += 1
+    EndWhile
+    JsonUtil.SetIntValue(StoreFile(), "peopleSeenSchema", 1)
+    JsonUtil.Save(StoreFile())
+EndFunction
+
+Int Function RememberOnce(Actor akActor) Global
+    { AppendPerson for the hourly passes, which touch each person ONCE EVER
+      rather than once an hour. Returns 1 when a new person was recorded.
+
+      AN HOURLY CHECK THAT CALLS INTO EVERY TRACKED ACTOR IS AS FRAGILE AS THE
+      MOST FRAGILE OF THEM. Papyrus serialises calls on an object, and a call
+      on one whose lock another script never gives back waits forever - there
+      is no timeout. Senna was that actor: something left her locked, and the
+      check stopped dead at her GetFormID, hour after hour, taking births,
+      ageing and exports with it. It only ever reached her to learn what the
+      roster already said.
+
+      So the question "have we met them" is now asked WITHOUT calling anything
+      on them. FormListHas is a global function that takes the actor as an
+      argument, and passing an object touches no lock; GetFormID, GetDisplayName
+      and GetSex are calls ON the actor, and do. Only someone genuinely new is
+      called into, once, and then listed here.
+
+      Kept in the store file rather than the co-save so the two cannot
+      disagree: a roster reset takes this list with it, and everyone is simply
+      met again. Explicit choices - RememberPerson, from the panel and the
+      crosshair - still go straight to AppendPerson; this is only the sweep.
+
+      A Form list rather than FormIDs because FormIDs are exactly what cannot
+      be read without the call. JsonUtil records the plugin and local id, so a
+      load order change does not make everyone a stranger again. }
+    If akActor == None
+        Return 0
+    EndIf
+    If JsonUtil.FormListHas(StoreFile(), SEEN_KEY(), akActor)
+        Return 0
+    EndIf
+    ; The breadcrumb Sweep reports if this call never returns.
+    StorageUtil.SetFormValue(None, "SNKin_SweepWho", akActor)
+    Int before = JsonUtil.IntListCount(StoreFile(), "people.ids")
+    AppendPerson(akActor)
+    JsonUtil.FormListAdd(StoreFile(), SEEN_KEY(), akActor, False)
+    StorageUtil.SetFormValue(None, "SNKin_SweepWho", None)
+    If JsonUtil.IntListCount(StoreFile(), "people.ids") > before
+        Return 1
+    EndIf
+    Return 0
 EndFunction
 
 Function AppendPerson(Actor akActor) Global
@@ -3694,6 +3816,51 @@ Function ClaimFmrBirth(Actor akMother, String asFather, Int aiFatherId) Global
     String mumName = akMother.GetDisplayName()
     Int mumId = akMother.GetFormID()
     RememberPerson(akMother)
+
+    ; A FATHER FERTILITY MODE HAS ALREADY FORGOTTEN IS NOT AN UNKNOWN FATHER.
+    ;
+    ; Thora is the case: Iddra went into labour with both of Fertility Mode's
+    ; father slots empty, so OnLabor passed a blank name and a zero id - while
+    ; the name it had captured at conception fifty-five game days earlier sat
+    ; unread on Iddra, and the birth was claimed as the player's on the strength
+    ; of that very capture. The log said "the player's child" and the record
+    ; said nobody's.
+    ;
+    ; Same ladder RecordChild has always used, in the same order: the name
+    ; captured at conception, then the stored text, then the captured reference.
+    ; Only then the player - and not for a player giving birth herself, whose
+    ; child's father is somebody else entirely. Every caller reaches this only
+    ; for a birth already attributed to the player, so that last rung restates
+    ; the decision already made rather than guessing.
+    If asFather == "" && aiFatherId == 0
+        Actor player = Game.GetPlayer()
+        asFather = StorageUtil.GetStringValue(akMother, "SNKin_LiveFather", "")
+        If asFather == ""
+            asFather = StoreGetText(akMother, "father")
+        EndIf
+        Actor dadRef = StorageUtil.GetFormValue(akMother, "SNKin_LiveFatherRef") as Actor
+        If dadRef == akMother
+            dadRef = None
+        EndIf
+        If asFather == "" && dadRef != None
+            asFather = dadRef.GetDisplayName()
+        EndIf
+        If asFather == "" && akMother != player
+            asFather = player.GetDisplayName()
+        EndIf
+        If asFather != ""
+            If asFather == player.GetDisplayName()
+                aiFatherId = player.GetFormID()
+            ElseIf dadRef != None && dadRef.GetDisplayName() == asFather
+                aiFatherId = dadRef.GetFormID()
+            Else
+                aiFatherId = PersonIdByName(asFather)
+            EndIf
+            Diag(LOG_INFO(), "Fertility Mode no longer held the father of " + mumName + \
+                "'s baby at labour; recorded " + asFather + " from what was captured earlier.")
+        EndIf
+    EndIf
+
     ; The mother can never also be the father - same rule as both other paths.
     If aiFatherId != 0 && aiFatherId == mumId
         aiFatherId = 0
