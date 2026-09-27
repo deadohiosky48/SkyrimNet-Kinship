@@ -112,6 +112,46 @@ foreach ($f in Get-ChildItem $src -Filter 'SNKin_*.psc' -File) {
     }
     if ($noneArray -eq 0) { Good "$($f.Name): no None returned as an array" }
 
+    # AN ARRAY IS NEVER COMPARED TO THE None LITERAL - test it with !arr.
+    #
+    # `arr == None` compiles to a CAST of None into a temporary of the array's
+    # type, and the VM refuses that cast: "Cannot cast from None to Form[]".
+    # That much is only noise - the comparison still comes out right. The
+    # damage is what the failed cast leaves behind: the temporary now holds an
+    # untyped None, the compiler reuses it for the next read of the same type,
+    # and that read is refused too ("Mismatched types assigning to variable")
+    # and yields nothing. No error names the variable that lost its value.
+    #
+    # It hid for months behind Fertility Mode: every hourly check logged ten of
+    # these, they were read as FMR's arrays being None, and meanwhile
+    # FatherNameAt could never read LastFather, CaptureFatherRef never read
+    # LastFatherRef, NoteNewChildren lost every race and father name, and the
+    # vampire race table was unreachable - each one the SECOND read after an
+    # `!= None` test on the first. `!arr` and `If arr` compile to a truth test
+    # with no cast at all. Where an empty array must differ from a missing one,
+    # compare against a typed local that was never assigned (see SeedPass).
+    #
+    # Array names are gathered per file from their declarations. Coarse - it
+    # does not track scope - but a name declared as an array anywhere in this
+    # mod is an array everywhere it is used, and the guard has to be cheap.
+    $arrNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($m in [regex]::Matches($text, '(?i)\b[A-Za-z_]\w*\[\]\s+(?:Property\s+)?([A-Za-z_]\w*)')) {
+        if ($m.Groups[1].Value -notmatch '^(?i:Function)$') { [void]$arrNames.Add($m.Groups[1].Value) }
+    }
+    $arrNone = 0; $ln3 = 0
+    foreach ($line in (([regex]::Replace($text, '\{[^}]*\}', { param($d) $d.Value -replace '[^\n]', '' })) -split "`n")) {
+        $ln3++
+        $codePart = ($line -replace ';.*$', '') -replace '"[^"]*"', '""'
+        foreach ($m in [regex]::Matches($codePart, '(?i)\b([A-Za-z_]\w*)\s*[!=]=\s*None\b|\bNone\s*[!=]=\s*([A-Za-z_]\w*)\b')) {
+            $name = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+            if ($arrNames.Contains($name)) {
+                Bad "$($f.Name):${ln3}: array '$name' compared with None - use !$name (see the note in check.ps1)"
+                $arrNone++
+            }
+        }
+    }
+    if ($arrNone -eq 0) { Good "$($f.Name): no array compared with None" }
+
     $code = [regex]::Replace($text, '\{[^}]*\}', '')
     $upPaths = [regex]::Matches($code, '"[^"]*\.\./[^"]*"')
     if ($upPaths.Count -gt 0) {

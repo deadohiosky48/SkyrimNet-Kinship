@@ -461,16 +461,23 @@ String Function FatherNameAt(Int aiIndex)
 
       Reading both, current first, is correct at every point in the sequence:
       before FMR's handler runs the answer is in CurrentFather, after it runs
-      the answer is in LastFather, and only one of them is ever populated. }
+      the answer is in LastFather, and only one of them is ever populated.
+
+      FOR MONTHS ONLY THE FIRST HALF OF THAT WORKED. The CurrentFather check was
+      written `current != None`, and comparing an array with the None literal
+      leaves the compiler's temporary poisoned - the LastFather read reused it
+      and came back empty every time, with an error that named neither. So every
+      labour where Fertility Mode's handler ran first lost its father, which is
+      what happened to Thora. The note in tools/check.ps1 has the mechanism. }
     If _store == None || aiIndex < 0
         Return ""
     EndIf
     String[] current = _store.CurrentFather
-    If current != None && aiIndex < current.Length && current[aiIndex] != ""
+    If current && aiIndex < current.Length && current[aiIndex] != ""
         Return current[aiIndex]
     EndIf
     String[] last = _store.LastFather
-    If last != None && aiIndex < last.Length
+    If last && aiIndex < last.Length
         Return last[aiIndex]
     EndIf
     Return ""
@@ -505,12 +512,12 @@ Function CaptureFatherRef(Actor akMother, Int aiIndex, Bool abCurrent)
     ; whose listener ran first. Checking both removes the race entirely.
     Actor father = None
     Form[] refs = _store.CurrentFatherRef
-    If refs != None && aiIndex < refs.Length
+    If refs && aiIndex < refs.Length
         father = refs[aiIndex] as Actor
     EndIf
     If father == None
         refs = _store.LastFatherRef
-        If refs != None && aiIndex < refs.Length
+        If refs && aiIndex < refs.Length
             father = refs[aiIndex] as Actor
         EndIf
     EndIf
@@ -846,7 +853,7 @@ Int Function RememberFrom(Form[] akSource, Int aiAlready)
     { Adds the unseen actors from one FMR array, recording each one's SEX so
       the editor can offer men for fathers and women for mothers. Returns the
       running total added. }
-    If akSource == None
+    If !akSource
         Return aiAlready
     EndIf
     Int added = aiAlready
@@ -1090,12 +1097,17 @@ Function SeedPass()
         Return
     EndIf
     String[] names = _store.PlayerChildName
-    If names == None
-        ; FMR has not finished initialising its arrays. Its own property
-        ; getters throw "Cannot cast from None to Form[]" in this window, which
-        ; Papyrus logs and continues past. Retry on the next poll rather than
-        ; burning the one-shot seed on an empty read - marking seeded here
-        ; would permanently skip every child the player already has.
+    ; FMR has not finished initialising its arrays. Retry on the next poll
+    ; rather than burning the one-shot seed on an empty read - marking seeded
+    ; here would permanently skip every child the player already has.
+    ;
+    ; COMPARED AGAINST A TYPED NONE, NOT THE LITERAL - see the note on arrays
+    ; and None in tools/check.ps1.
+    ; Every other array check in this file uses !names, but that cannot be used
+    ; here: an EMPTY list is a real answer (no children yet, seed nothing and
+    ; mark it done), and only a list that does not exist means "not ready".
+    String[] notYet
+    If names == notYet
         Return
     EndIf
 
@@ -1143,7 +1155,7 @@ Function AdoptBabiesInFlight()
     EndIf
     Form[] tracked = _store.TrackedActors
     Float[] babyAdded = _store.BabyAdded
-    If tracked == None || babyAdded == None
+    If !tracked || !babyAdded
         Return
     EndIf
     String playerName = Game.GetPlayer().GetDisplayName()
@@ -1156,7 +1168,9 @@ Function AdoptBabiesInFlight()
         ; than at a known point in it.
         ; NO FATHER-NAME FILTER. It used to require FatherNameAt == the player,
         ; and on the live save that is EMPTY for every carrying mother - so this
-        ; adopted nobody and two births went unwatched. Carrying a baby at all
+        ; adopted nobody and two births went unwatched. (It was not really
+        ; empty: the name was in LastFather, which FatherNameAt could not read
+        ; until 1.9.6. The filter stays gone either way.) Carrying a baby at all
         ; is enough to be worth watching; FMR only ever creates a child record
         ; for the player's children anyway (the gate in CheckBabyGrowth), so a
         ; mother watched in vain simply never produces one.
@@ -1195,11 +1209,11 @@ Function NoteDeliveries()
         Return
     EndIf
     Form[] tracked = _store.TrackedActors
-    If tracked == None || tracked.Length == 0
+    If !tracked || tracked.Length == 0
         Return
     EndIf
     Float[] babyAdded = _store.BabyAdded
-    If babyAdded == None
+    If !babyAdded
         Return
     EndIf
 
@@ -1262,7 +1276,7 @@ Function NoteNewChildren()
         Return
     EndIf
     String[] names = _store.PlayerChildName
-    If names == None || names.Length == 0
+    If !names || names.Length == 0
         Return
     EndIf
     Int[] genders = _store.PlayerChildGender
@@ -1274,20 +1288,20 @@ Function NoteNewChildren()
         String nm = names[i]
         If nm != "" && !HasChild(nm)
             String gender = ""
-            If genders != None && i < genders.Length && genders[i] == 1
+            If genders && i < genders.Length && genders[i] == 1
                 gender = "daughter"
-            ElseIf genders != None && i < genders.Length
+            ElseIf genders && i < genders.Length
                 gender = "son"
             EndIf
             ; NOT "race" - Race is a Papyrus type, and naming a local after one
             ; fails with "cannot name a variable or property the same as a
             ; known type or script".
             String raceName = ""
-            If races != None && i < races.Length
+            If races && i < races.Length
                 raceName = races[i]
             EndIf
             String fmrFather = ""
-            If fathers != None && i < fathers.Length
+            If fathers && i < fathers.Length
                 fmrFather = fathers[i]
             EndIf
             ; The duplicate guard lives in RecordChild, where the mother has
@@ -1496,7 +1510,7 @@ Function RecordChild(String asName, String asGender, String asRace, String asFmr
     ; the names would shift them out of step with the FormIDs the moment two
     ; candidates shared a display name, and silently assign the wrong mother.
     Int nCand = 0
-    If mother == None && shortlist != None && shortlist.Length > 1
+    If mother == None && shortlist && shortlist.Length > 1
         Int cand = 0
         While cand < shortlist.Length
             Actor c = shortlist[cand] as Actor
@@ -1543,7 +1557,7 @@ Form[] Function MothersMaturedRecently(Float afTolerance)
       rather than the other way round. The watch list is built by
       AdoptBabiesInFlight and OnLabor, both of which key off the father's name -
       and on the live save that name is EMPTY for every carrying mother, so
-      neither ever fired. Camilla and Ganna carried the player's children for
+      neither ever fired. (Empty as read, not as stored: see FatherNameAt.) Camilla and Ganna carried the player's children for
       ten days, matured, and were never once watched; Titus and Leif recorded
       with no mother and not even a candidate list, because nothing was
       awaiting to tie.
@@ -1563,7 +1577,7 @@ Form[] Function MothersMaturedRecently(Float afTolerance)
     Form[] tracked = _store.TrackedActors
     Float[] births = _store.LastBirth
     Float[] babies = _store.BabyAdded
-    If tracked == None || births == None || babies == None
+    If !tracked || !births || !babies
         Return Utility.ResizeFormArray(hits, 0)
     EndIf
     Float now = Utility.GetCurrentGameTime()
@@ -2141,7 +2155,7 @@ Function BindSpawnedChildren()
         Return
     EndIf
     Actor[] spawned = _store.SpawnedChildActorRefs
-    If spawned == None
+    If !spawned
         Return
     EndIf
     Int i = 0
@@ -3703,12 +3717,12 @@ Int Function RaceRowFor(_JSW_BB_Storage akStore, Actor akWho) Global
     EndIf
     Race[] normal = akStore.BirthMotherRace
     Int hit = -1
-    If normal != None
+    If normal
         hit = normal.Find(r)
     EndIf
     If hit < 0
         Race[] vamp = akStore.BirthMotherRaceVampire
-        If vamp != None
+        If vamp
             hit = vamp.Find(r)
         EndIf
     EndIf
@@ -3732,7 +3746,7 @@ Int Function RaceRowFor(_JSW_BB_Storage akStore, Actor akWho) Global
     ; and the mother-father-player chain still applies.
     Race parent = SNKin_Native.GetParentRace(r)
     If parent != None && parent != r
-        If normal != None
+        If normal
             hit = normal.Find(parent)
         EndIf
         If hit >= 0
@@ -3819,8 +3833,9 @@ Function ClaimFmrBirth(Actor akMother, String asFather, Int aiFatherId) Global
 
     ; A FATHER FERTILITY MODE HAS ALREADY FORGOTTEN IS NOT AN UNKNOWN FATHER.
     ;
-    ; Thora is the case: Iddra went into labour with both of Fertility Mode's
-    ; father slots empty, so OnLabor passed a blank name and a zero id - while
+    ; Thora is the case: Iddra went into labour with Fertility Mode's father
+    ; already moved into LastFather, which FatherNameAt could not read at the
+    ; time (see its note), so OnLabor passed a blank name and a zero id - while
     ; the name it had captured at conception fifty-five game days earlier sat
     ; unread on Iddra, and the birth was claimed as the player's on the strength
     ; of that very capture. The log said "the player's child" and the record
@@ -3989,7 +4004,7 @@ Function AdoptInFlightBirths()
     EndIf
     Float[] added = store.BabyAdded
     Form[] tracked = store.TrackedActors
-    If added == None || tracked == None
+    If !added || !tracked
         Return
     EndIf
     Float window = BabyDurationDays()
@@ -4021,9 +4036,10 @@ Function AdoptInFlightBirths()
                 ; have gone empty in the days since, the answer is still known.
                 ;
                 ; Not hypothetical: both mothers adopted on the live save came
-                ; through with no father at all, because FatherNameAt reads
-                ; CurrentFather then LastFather and by then Fertility Mode had
-                ; cleared both. Two of the player's children were recorded
+                ; through with no father at all, because FatherNameAt returned
+                ; nothing - most likely the LastFather read that could not work
+                ; until 1.9.6 (see FatherNameAt), though a father Fertility Mode
+                ; really has cleared lands here too. Two of the player's children were recorded
                 ; fatherless with the answer sitting in a flag we had checked
                 ; one line earlier.
                 ;
@@ -5726,7 +5742,7 @@ Actor Function SpawnOwnedChild(Int aiIdx) Global
     ActorBase[] bases = store.Children
     Int sex = ChildSex(aiIdx)
     Int slot = 2 * raceIdx + sex
-    If bases == None || slot < 0 || slot >= bases.Length || bases[slot] == None
+    If !bases || slot < 0 || slot >= bases.Length || bases[slot] == None
         JsonUtil.SetIntValue(StoreFile(), "child." + aiIdx + ".spawnFailed", 1)
         JsonUtil.Save(StoreFile())
         Return None
@@ -6744,7 +6760,7 @@ Function DumpMothers()
     Float[] births = _store.LastBirth
     Float[] babies = _store.BabyAdded
     Float[] conception = _store.LastConception
-    If tracked == None || births == None || babies == None
+    If !tracked || !births || !babies
         Return
     EndIf
     Float now = Utility.GetCurrentGameTime()
@@ -6764,7 +6780,7 @@ Function DumpMothers()
             Float lb = births[i]
             Float ba = babies[i]
             Float lc = 0.0
-            If conception != None && i < conception.Length
+            If conception && i < conception.Length
                 lc = conception[i]
             EndIf
             ; Only the ones with any reproductive history - a full 256-row dump
@@ -6900,7 +6916,7 @@ Form[] Function MothersMaturedStatic(_JSW_BB_Storage akStore, Float afTolerance)
     Form[] tracked = akStore.TrackedActors
     Float[] births = akStore.LastBirth
     Float[] babies = akStore.BabyAdded
-    If tracked == None || births == None || babies == None
+    If !tracked || !births || !babies
         Return Utility.ResizeFormArray(hits, 0)
     EndIf
     Float now = Utility.GetCurrentGameTime()
@@ -7054,7 +7070,7 @@ Bool Function RecoverMotherInWindow(String asChildName, Float afMinDaysAgo, Floa
     EndIf
     Form[] tracked = _store.TrackedActors
     Float[] births = _store.LastBirth
-    If tracked == None || births == None
+    If !tracked || !births
         Return False
     EndIf
 
@@ -7388,7 +7404,7 @@ Function ClearBindings()
         Return
     EndIf
     Actor[] spawned = _store.SpawnedChildActorRefs
-    If spawned == None
+    If !spawned
         Return
     EndIf
     Int i = 0

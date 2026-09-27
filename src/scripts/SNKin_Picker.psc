@@ -138,7 +138,7 @@ Int Function Pick(String asTitle, String[] asOptions) Global
     ; NOT "ui" - UI is a known Papyrus script (UI.OpenCustomMenu and friends)
     ; and a local of that name fails to compile.
     UILIB_1 provider = Lib()
-    If provider == None || asOptions == None || asOptions.Length == 0
+    If provider == None || !asOptions || asOptions.Length == 0
         Return -1
     EndIf
     Return provider.ShowList(asTitle, asOptions, 0, 0)
@@ -703,7 +703,7 @@ Int Function Gather(Form[] akSource, Actor[] akInto, String[] asRows, Int aiCoun
     { Appends the non-empty, non-duplicate actors from one FMR array. Returns
       the new count. Duplicates matter: a woman can appear in both arrays on a
       female-player save. }
-    If akSource == None
+    If !akSource
         Return aiCount
     EndIf
     Int n = aiCount
