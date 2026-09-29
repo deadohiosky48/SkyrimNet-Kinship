@@ -62,3 +62,14 @@ desktop.ini
 # A snapshot of one machine's live config, written by tools/settings.ps1.
 # Personal state, not shipped content.
 /tools/.settings-snapshot.txt
+
+# ---------------------------------------------------------------------------
+# Names the git hooks refuse to let into a commit (tools/hooks/_identity.sh).
+# The list is private by definition - publishing it would be the leak.
+# ---------------------------------------------------------------------------
+/tools/identity-denylist.txt
+
+# Internal working documents - requests to other authors and platform impact
+# notes. Not for the public repository.
+/docs/BETA25_*.md
+/docs/API_REQUEST_*.md
