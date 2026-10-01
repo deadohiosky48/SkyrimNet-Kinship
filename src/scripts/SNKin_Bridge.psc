@@ -739,9 +739,6 @@ EndFunction
 Function SweepAt(String asStep)
     { Where the running check has got to. Read only if it never finishes. }
     StorageUtil.SetStringValue(None, "SNKin_SweepStep", asStep)
-    If asStep == ""
-        StorageUtil.SetFormValue(None, "SNKin_SweepWho", None)
-    EndIf
 EndFunction
 
 Function ReportUnfinishedSweep(Float afSeconds)
@@ -759,12 +756,19 @@ Function ReportUnfinishedSweep(Float afSeconds)
 
       The character is shown as the Form itself, which Papyrus prints as its
       FormID without calling anything on it - asking a locked actor for their
-      name would stop this check in the same place. }
+      name would stop this check in the same place.
+
+      Held in a one-entry StorageUtil form LIST rather than a form value, so it
+      is never cleared by storing None - see RememberOnce for why 1.9.7 keeps to
+      calls 1.9.3 already made. }
     String stepName = StorageUtil.GetStringValue(None, "SNKin_SweepStep", "")
     If stepName == ""
         stepName = "an unknown step"
     EndIf
-    Form who = StorageUtil.GetFormValue(None, "SNKin_SweepWho")
+    Form who = None
+    If StorageUtil.FormListCount(None, "SNKin_SweepWho") > 0
+        who = StorageUtil.FormListGet(None, "SNKin_SweepWho", 0)
+    EndIf
     String msg = "The previous check has not finished after " + (afSeconds as Int) + \
         "s. It was last at " + stepName
     If who != None
@@ -774,6 +778,11 @@ Function ReportUnfinishedSweep(Float afSeconds)
             "that FormID in the console"
     EndIf
     Diag(LOG_WARN(), msg + ". Starting a fresh check.")
+    ; Taken off once reported, so a later report cannot name a stale character.
+    ; A check that does come back removes its own entry anyway.
+    If who != None
+        StorageUtil.FormListRemove(None, "SNKin_SweepWho", who, True)
+    EndIf
 EndFunction
 
 Function RememberPeople()
@@ -805,17 +814,17 @@ Function RememberPeople()
     ; the father of nearly every child in the store, yet appeared in no
     ; dropdown, because the roster was seeded only from FMR's arrays and from
     ; recorded fatherIds, which were still 0 on older records.
-    SeedSeen()
-    Int seenBefore = JsonUtil.FormListCount(StoreFile(), SEEN_KEY())
-    Int added = RememberOnce(Game.GetPlayer())
+    String seenKey = SeenKey()
+    SeedSeen(seenKey)
+    Int added = RememberOnce(Game.GetPlayer(), seenKey)
 
     ; BOTH of FMR's arrays. TrackedActors holds the women it follows cycles
     ; for; TrackedFathers holds the men it has recorded as fathers. Reading only
     ; the first is why the Father dropdown offered nothing but women - there
     ; were no men in the roster at all.
     If _store != None
-        added = RememberFrom(_store.TrackedActors, added)
-        added = RememberFrom(_store.TrackedFathers, added)
+        added = RememberFrom(_store.TrackedActors, added, seenKey)
+        added = RememberFrom(_store.TrackedFathers, added, seenKey)
     EndIf
     ; Also seed from parents ALREADY recorded, so the editor is useful on the
     ; very first run rather than only for people met afterwards. Without this
@@ -832,24 +841,23 @@ Function RememberPeople()
     While c < n
         Int mId = JsonUtil.GetIntValue(StoreFile(), "child." + c + ".motherId", 0)
         If mId != 0
-            added += RememberOnce(Game.GetFormEx(mId) as Actor)
+            added += RememberOnce(Game.GetFormEx(mId) as Actor, seenKey)
         EndIf
         Int fId = JsonUtil.GetIntValue(StoreFile(), "child." + c + ".fatherId", 0)
         If fId != 0
-            added += RememberOnce(Game.GetFormEx(fId) as Actor)
+            added += RememberOnce(Game.GetFormEx(fId) as Actor, seenKey)
         EndIf
         c += 1
     EndWhile
 
-    If added > 0 || JsonUtil.FormListCount(StoreFile(), SEEN_KEY()) != seenBefore
-        JsonUtil.Save(StoreFile())
-    EndIf
     If added > 0
-        Diag(LOG_INFO(), "Remembered " + added + " new person/people for the parent editor (" +             JsonUtil.IntListCount(StoreFile(), "people.ids") + " known).")
+        JsonUtil.Save(StoreFile())
+        Diag(LOG_INFO(), "Remembered " + added + " new person/people for the parent editor (" + \
+            JsonUtil.IntListCount(StoreFile(), "people.ids") + " known).")
     EndIf
 EndFunction
 
-Int Function RememberFrom(Form[] akSource, Int aiAlready)
+Int Function RememberFrom(Form[] akSource, Int aiAlready, String asSeenKey)
     { Adds the unseen actors from one FMR array, recording each one's SEX so
       the editor can offer men for fathers and women for mothers. Returns the
       running total added. }
@@ -859,26 +867,47 @@ Int Function RememberFrom(Form[] akSource, Int aiAlready)
     Int added = aiAlready
     Int i = 0
     While i < akSource.Length
-        added += RememberOnce(akSource[i] as Actor)
+        added += RememberOnce(akSource[i] as Actor, asSeenKey)
         i += 1
     EndWhile
     Return added
 EndFunction
 
-String Function SEEN_KEY() Global
-    { Everyone the hourly passes have already handed to AppendPerson, as Forms. }
-    Return "people.seen"
+String Function SeenKey() Global
+    { The StorageUtil key that marks a character as already met, for THIS store.
+
+      The marks live in the co-save, keyed on the character; the roster lives in
+      a JSON file. A token written into that file at creation ties the two
+      together: delete or replace the roster and its token goes with it, every
+      old mark stops matching, and everyone is met again - rather than being
+      skipped forever by marks that outlived the roster they described. }
+    Int token = JsonUtil.GetIntValue(StoreFile(), "seenToken", 0)
+    If token == 0
+        token = Utility.RandomInt(1, 2000000000)
+        JsonUtil.SetIntValue(StoreFile(), "seenToken", token)
+        JsonUtil.Save(StoreFile())
+    EndIf
+    Return "SNKin_Seen." + token
 EndFunction
 
-Function SeedSeen() Global
-    { Fills the seen list from the roster that already exists, ONCE.
+Function SeedSeen(String asSeenKey) Global
+    { Marks everyone the roster already knows as met, once per save.
 
       Without this the first check after updating would meet all two hundred
       known people again - calling into every one of them - and on a save where
       one of them is locked, that first check is exactly where it would stop.
-      Game.GetFormEx takes an id and calls nothing on the actor it returns, so
-      this reaches everyone already known without touching any of them. }
-    If JsonUtil.GetIntValue(StoreFile(), "peopleSeenSchema", 0) == 1
+      Game.GetFormEx takes an id and calls nothing on the actor it returns, and
+      StorageUtil takes the actor as an argument, so this reaches everyone
+      already known without touching any of them.
+
+      The done-flag is in the co-save beside the marks, not in the JSON: load
+      an older save and both are gone together, so the seed simply runs again.
+
+      1.9.5 and 1.9.6 kept this list in the JSON as "people.seen", with the flag
+      "peopleSeenSchema". Both are left where they are: nothing reads them, and
+      removing them would take the very JsonUtil form call this version exists
+      to stop making. }
+    If StorageUtil.GetIntValue(None, asSeenKey + ".seeded", 0) == 1
         Return
     EndIf
     Int n = JsonUtil.IntListCount(StoreFile(), "people.ids")
@@ -886,15 +915,14 @@ Function SeedSeen() Global
     While i < n
         Form f = Game.GetFormEx(JsonUtil.IntListGet(StoreFile(), "people.ids", i))
         If f != None
-            JsonUtil.FormListAdd(StoreFile(), SEEN_KEY(), f, False)
+            StorageUtil.SetIntValue(f, asSeenKey, 1)
         EndIf
         i += 1
     EndWhile
-    JsonUtil.SetIntValue(StoreFile(), "peopleSeenSchema", 1)
-    JsonUtil.Save(StoreFile())
+    StorageUtil.SetIntValue(None, asSeenKey + ".seeded", 1)
 EndFunction
 
-Int Function RememberOnce(Actor akActor) Global
+Int Function RememberOnce(Actor akActor, String asSeenKey) Global
     { AppendPerson for the hourly passes, which touch each person ONCE EVER
       rather than once an hour. Returns 1 when a new person was recorded.
 
@@ -907,31 +935,35 @@ Int Function RememberOnce(Actor akActor) Global
       roster already said.
 
       So the question "have we met them" is now asked WITHOUT calling anything
-      on them. FormListHas is a global function that takes the actor as an
-      argument, and passing an object touches no lock; GetFormID, GetDisplayName
-      and GetSex are calls ON the actor, and do. Only someone genuinely new is
-      called into, once, and then listed here.
+      on them. StorageUtil.GetIntValue is a global function that takes the
+      actor as an argument, and passing an object touches no lock; GetFormID,
+      GetDisplayName and GetSex are calls ON the actor, and do. Only someone
+      genuinely new is called into, once, and then marked.
 
-      Kept in the store file rather than the co-save so the two cannot
-      disagree: a roster reset takes this list with it, and everyone is simply
-      met again. Explicit choices - RememberPerson, from the panel and the
-      crosshair - still go straight to AppendPerson; this is only the sweep.
+      A MARK ON THE CHARACTER, NOT A LIST IN THE JSON - and only calls 1.9.3
+      already made. 1.9.5 kept the met list as a JsonUtil form list, the first
+      game objects this mod ever wrote into a JSON file, and cleared the
+      breadcrumb below by storing None in a form value, which 1.9.3 never did
+      either. A Skyrim VR player reported a silent crash to desktop on later
+      versions, and their log stopped right before this call. Keyed per
+      character in the co-save is how SNKin_ByPlayer has worked since long
+      before 1.9.3, on every runtime, so it is what this uses. SeenKey ties the
+      marks to the roster they describe.
 
-      A Form list rather than FormIDs because FormIDs are exactly what cannot
-      be read without the call. JsonUtil records the plugin and local id, so a
-      load order change does not make everyone a stranger again. }
+      Explicit choices - RememberPerson, from the panel and the crosshair - still
+      go straight to AppendPerson; this is only the sweep. }
     If akActor == None
         Return 0
     EndIf
-    If JsonUtil.FormListHas(StoreFile(), SEEN_KEY(), akActor)
+    If StorageUtil.GetIntValue(akActor, asSeenKey, 0) == 1
         Return 0
     EndIf
     ; The breadcrumb Sweep reports if this call never returns.
-    StorageUtil.SetFormValue(None, "SNKin_SweepWho", akActor)
+    StorageUtil.FormListAdd(None, "SNKin_SweepWho", akActor, False)
     Int before = JsonUtil.IntListCount(StoreFile(), "people.ids")
     AppendPerson(akActor)
-    JsonUtil.FormListAdd(StoreFile(), SEEN_KEY(), akActor, False)
-    StorageUtil.SetFormValue(None, "SNKin_SweepWho", None)
+    StorageUtil.SetIntValue(akActor, asSeenKey, 1)
+    StorageUtil.FormListRemove(None, "SNKin_SweepWho", akActor, True)
     If JsonUtil.IntListCount(StoreFile(), "people.ids") > before
         Return 1
     EndIf
