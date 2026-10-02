@@ -5250,9 +5250,10 @@ Function NoteHome(Int aiIdx, Actor akKid) Global
       and JsonUtil.Save is a file write - doing it unconditionally would mean
       rewriting the whole store several times a minute to record nothing.
 
-      An empty answer is stored as empty rather than skipped: "no home" is the
-      case the player most needs to see, and leaving a stale value there would
-      hide exactly that. }
+      An empty answer is stored only when this record has nothing either - "no
+      home" is the case the player most needs to see. When the record DOES hold
+      one, SeverActions losing it is the problem, and the record restores it
+      (see below). }
     If akKid == None || aiIdx < 0 || !HasSeverActions()
         Return
     EndIf
@@ -5263,7 +5264,22 @@ Function NoteHome(Int aiIdx, Actor akKid) Global
         Return
     EndIf
     String now = SeverActionsNative.Native_GetHome(akKid)
-    If now != JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".home", "")
+    String had = JsonUtil.GetStringValue(StoreFile(), "child." + aiIdx + ".home", "")
+    ; OUR COPY IS THE BACKUP, NOT A MIRROR OF A BLANK.
+    ;
+    ; SeverActions 4.0.0 came up with no homes at all - 88 homed NPCs on the
+    ; last 3.9 save, zero from the first 4.0 load - and this function, copying
+    ; faithfully, blanked fifty children in one sweep. A home this record still
+    ; holds is put back instead of being erased. The cost is that clearing a
+    ; child's home in SeverActions does not stick; changing it still does,
+    ; because a non-empty answer is copied as before.
+    If now == "" && had != ""
+        SeverActionsNative.Native_SetHome(akKid, had)
+        Diag(LOG_INFO(), akKid.GetDisplayName() + " had no home in SeverActions; restored '" + \
+            had + "' from this mod's record.")
+        Return
+    EndIf
+    If now != had
         JsonUtil.SetStringValue(StoreFile(), "child." + aiIdx + ".home", now)
         JsonUtil.Save(StoreFile())
     EndIf
