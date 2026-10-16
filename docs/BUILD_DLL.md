@@ -66,6 +66,14 @@ None of this is installed on the development machine as of 2026-08-16.
    git clone https://github.com/alandtse/CommonLibVR.git --branch ng --recursive SKSE_Source/extern/CommonLibSSE-NG
    ```
 
+   **Use a checkout from 23 Aug 2026 or later.** Skyrim AE 1.7.104 ships
+   Address Library format 5, and SKSE there loads only plugins that declare
+   support for it (`kVersionIndependentEx_AddressLibraryV5`, which CommonLib
+   sets by default from that date). Releases 1.9.3 through 1.9.8 shipped a DLL
+   built against a 16 Aug checkout and fail to load on 1.7.104. 1.9.9 was built
+   against `4ed481641` (13 Oct 2026). `tools/check.ps1` verifies the flag in the
+   built DLL.
+
 `SKSEMenuFramework.h` is already vendored in `SKSE_Source/include/`. It is the
 framework's public integration header and is meant to be copied in — the
 framework ships only a DLL, so there is nothing to link against.

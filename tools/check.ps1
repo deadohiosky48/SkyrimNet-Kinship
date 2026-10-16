@@ -400,6 +400,43 @@ if (-not $idPkg.Success -or -not $idDep.Success) {
 }
 
 Write-Host ""
+Write-Host "`nSKSE DLL"
+# SKSE ON AE 1.7.104 LOADS ONLY PLUGINS THAT DECLARE ADDRESS LIBRARY V5 - bit
+# 0x2 of versionIndependenceEx in the exported SKSEPlugin_Version data, set by
+# CommonLib from its 23 Aug 2026 checkout onward. 1.9.3 to 1.9.8 shipped a DLL
+# without it and failed to load there, silently, while working on every runtime
+# the author could test. Read straight from the export, so a stale CommonLib
+# checkout fails here rather than on a player's machine.
+$dllPath = Join-Path $repo 'SKSE_Source\build\Release\SkyrimNetKinship.dll'
+if (Test-Path $dllPath) {
+    $b = [System.IO.File]::ReadAllBytes($dllPath)
+    $pe = [BitConverter]::ToInt32($b, 0x3c)
+    $nsec = [BitConverter]::ToUInt16($b, $pe + 6)
+    $opt = $pe + 24
+    $osz = [BitConverter]::ToUInt16($b, $pe + 20)
+    $secs = for ($i = 0; $i -lt $nsec; $i++) {
+        $s = $opt + $osz + 40 * $i
+        [pscustomobject]@{ VS = [BitConverter]::ToUInt32($b, $s + 8); VA = [BitConverter]::ToUInt32($b, $s + 12)
+                           RS = [BitConverter]::ToUInt32($b, $s + 16); Raw = [BitConverter]::ToUInt32($b, $s + 20) }
+    }
+    function Off([uint32]$rva) { foreach ($x in $secs) { if ($rva -ge $x.VA -and $rva -lt $x.VA + [Math]::Max($x.VS, $x.RS)) { return [int]($rva - $x.VA + $x.Raw) } }; -1 }
+    $e = Off ([BitConverter]::ToUInt32($b, $opt + 112))
+    $n = [BitConverter]::ToUInt32($b, $e + 24)
+    $fa = Off ([BitConverter]::ToUInt32($b, $e + 28)); $na = Off ([BitConverter]::ToUInt32($b, $e + 32)); $oa = Off ([BitConverter]::ToUInt32($b, $e + 36))
+    $vix = $null
+    for ($i = 0; $i -lt $n; $i++) {
+        $no = Off ([BitConverter]::ToUInt32($b, $na + 4 * $i)); $end = [Array]::IndexOf($b, [byte]0, $no)
+        if ([Text.Encoding]::ASCII.GetString($b, $no, $end - $no) -eq 'SKSEPlugin_Version') {
+            $ord = [BitConverter]::ToUInt16($b, $oa + 2 * $i)
+            $d = Off ([BitConverter]::ToUInt32($b, $fa + 4 * $ord))
+            $vix = [BitConverter]::ToUInt32($b, $d + 8 + 256 + 256 + 252)
+        }
+    }
+    if ($null -eq $vix) { Bad "SkyrimNetKinship.dll: no SKSEPlugin_Version export" }
+    elseif (($vix -band 2) -eq 0) { Bad "SkyrimNetKinship.dll does not declare Address Library v5 (versionIndependenceEx=0x$('{0:x}' -f $vix)) - it will not load on AE 1.7.104; update CommonLib (docs/BUILD_DLL.md)" }
+    else { Good "SkyrimNetKinship.dll declares Address Library v5" }
+} else { Good "no built DLL to inspect" }
+
 if ($fail -gt 0) {
     Write-Host "$fail check(s) failed." -ForegroundColor Red
     exit 1
