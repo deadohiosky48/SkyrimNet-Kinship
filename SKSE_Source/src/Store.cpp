@@ -127,36 +127,35 @@ namespace Kinship::Store {
         return std::string(kDir) + "SNKin_Parentage.json";
     }
 
-    void Reload() {
-        g_children.clear();
-        g_people.clear();
-        g_schema = 0;
-        g_error.clear();
+    bool Parse(const std::string& a_path, std::vector<Child>& a_children, std::vector<Person>& a_people, int& a_schema,
+               std::string& a_error) {
+        a_children.clear();
+        a_people.clear();
+        a_schema = 0;
+        a_error.clear();
 
-        const auto path = Path();
+        const auto& path = a_path;
         std::ifstream in(path);
         if (!in) {
-            g_loaded = false;
-            g_error = "store not found: " + path;
-            return;
+            a_error = "store not found: " + path;
+            return false;
         }
 
         nlohmann::json root;
         try {
             in >> root;
         } catch (const std::exception& e) {
-            g_loaded = false;
-            g_error = std::string("parse failed: ") + e.what();
-            return;
+            a_error = std::string("parse failed: ") + e.what();
+            return false;
         }
 
-        g_schema = Get<int>(root, "int", "schema", 0);
+        a_schema = Get<int>(root, "int", "schema", 0);
 
         // The roster is the authority on which indices exist, exactly as in
         // Papyrus - a child is real because it is on the roster, not because
         // some child.N.* key happens to be present.
         const auto roster = GetStringList(root, "roster");
-        g_children.reserve(roster.size());
+        a_children.reserve(roster.size());
 
         for (std::size_t i = 0; i < roster.size(); ++i) {
             const auto key = "child." + std::to_string(i) + ".";
@@ -192,7 +191,7 @@ namespace Kinship::Store {
             if (c.hidden) {
                 continue;   // slot stays in the file so indices never shift
             }
-            g_children.push_back(std::move(c));
+            a_children.push_back(std::move(c));
         }
 
         // KEYED records, not parallel lists. people.ids is only an index;
@@ -208,15 +207,19 @@ namespace Kinship::Store {
                 continue;   // index entry with no record: skip rather than show a blank
             }
             p.sex = Get<int>(root, "int", key + "sex", -1);
-            g_people.push_back(std::move(p));
+            a_people.push_back(std::move(p));
         }
 
         // Sorted once here rather than in the panel, which redraws every frame.
-        std::sort(g_people.begin(), g_people.end(), [](const Person& a, const Person& b) {
+        std::sort(a_people.begin(), a_people.end(), [](const Person& a, const Person& b) {
             return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
         });
 
-        g_loaded = true;
+        return true;
+    }
+
+    void Reload() {
+        g_loaded = Parse(Path(), g_children, g_people, g_schema, g_error);
     }
 
     bool RefreshIfChanged() {

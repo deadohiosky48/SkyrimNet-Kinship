@@ -72,6 +72,14 @@ namespace Kinship::Store {
     // timestamp is free.
     bool RefreshIfChanged();
 
+    // Reads a store into the given lists, sharing nothing with the panel's
+    // copy: the read API (Api.cpp) keeps its own, because the panel rereads
+    // its lists on the render thread while the API is asked on the game's.
+    // False, with a_error set, when the file is missing or unreadable.
+    struct Person;
+    bool Parse(const std::string& a_path, std::vector<Child>& a_children, std::vector<Person>& a_people, int& a_schema,
+               std::string& a_error);
+
     // Forces a reparse. Call after a write has been dispatched to Papyrus -
     // though note dispatch is ASYNCHRONOUS, so an immediate refresh will often
     // still show the old value. The panel handles that by refreshing on a short
