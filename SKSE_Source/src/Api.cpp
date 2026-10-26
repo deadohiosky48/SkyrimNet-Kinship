@@ -61,12 +61,22 @@ namespace Kinship::Api {
             return need;
         }
 
+        // Papyrus has no unsigned type: a 0xFF form id is recorded negative.
+        std::uint32_t Id(std::int32_t a_recorded) {
+            return static_cast<std::uint32_t>(a_recorded);
+        }
+
         std::uint32_t AllChildren(char* a_out, std::uint32_t a_size) {
             auto out = nlohmann::json::array();
             {
                 const std::scoped_lock lock{ g_lock };
                 Refresh();
                 for (const auto& c : g_children) {
+                    // A tombstone keeps a roster index stable; it is not a
+                    // child any more (dev4: the calendar showed them).
+                    if (c.hidden) {
+                        continue;
+                    }
                     out.push_back({ { "name", c.name },
                                     { "child", c.gender },
                                     { "stage", c.stage },
@@ -83,7 +93,12 @@ namespace Kinship::Api {
                                     { "bornKnown", !c.manual && c.born > 0.0f &&
                                                        (c.source == 1 || c.source == 2 || c.owned) },
                                     { "mother", c.motherName },
-                                    { "father", c.fatherName } });
+                                    { "father", c.fatherName },
+                                    // dev4: who, by reference, so another
+                                    // plugin can find them without names.
+                                    { "refId", c.hasBody ? Id(c.refId) : 0u },
+                                    { "motherId", Id(c.motherId) },
+                                    { "fatherId", Id(c.fatherId) } });
                 }
             }
             return Write(out, a_out, a_size);
@@ -95,11 +110,9 @@ namespace Kinship::Api {
                 const std::scoped_lock lock{ g_lock };
                 Refresh();
                 for (const auto& c : g_children) {
-                    // Papyrus has no unsigned type: a 0xFF form id is recorded
-                    // negative.
-                    const auto mother = static_cast<std::uint32_t>(c.motherId);
-                    const auto father = static_cast<std::uint32_t>(c.fatherId);
-                    if (mother != a_parentFormId && father != a_parentFormId) {
+                    const auto mother = Id(c.motherId);
+                    const auto father = Id(c.fatherId);
+                    if (c.hidden || (mother != a_parentFormId && father != a_parentFormId)) {
                         continue;
                     }
                     out.push_back({ { "name", c.name },
@@ -107,7 +120,8 @@ namespace Kinship::Api {
                                     { "stage", c.stage },
                                     { "adopted", c.adopted },
                                     { "inWorld", c.hasBody },
-                                    { "born", c.born } });
+                                    { "born", c.born },
+                                    { "refId", c.hasBody ? Id(c.refId) : 0u } });
                 }
             }
             const auto text = out.dump(-1, ' ', true);

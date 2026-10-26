@@ -26,12 +26,14 @@ struct SNKinship_API_V1 {
     // first:
     //
     //     [{ "name": "Lucia", "child": "daughter", "stage": 3, "adopted": false,
-    //        "inWorld": true, "born": 214.5 }, ...]
+    //        "inWorld": true, "born": 214.5, "refId": 4278190080 }, ...]
     //
     // child: "son", "daughter" or "" when unrecorded. stage: 0 newborn to 5
     // adult; -1 when life stages are off or not yet worked out. inWorld: a
     // body is recorded for them (a child can be a record only). born: game
-    // days; 0 when unrecorded.
+    // days; 0 when unrecorded. refId (1.10): the child's reference form id,
+    // unsigned; 0 while they are a record only. A record removed from the
+    // panel (a tombstone) is never listed.
     //
     // Writes at most a_size bytes, a terminating NUL included, into a_out, and
     // returns the size the whole answer needs, its NUL included. Call with a
@@ -45,11 +47,14 @@ struct SNKinship_API_V1 {
 //
 //     [{ "name": "Lucia", "child": "daughter", "stage": 3, "adopted": false,
 //        "inWorld": true, "born": 214.5, "bornKnown": true, "mother": "Ysolde",
-//        "father": "Haruk" }, ...]
+//        "father": "Haruk", "refId": 4278190080, "motherId": 20,
+//        "fatherId": 4278190081 }, ...]
 //
 // bornKnown: born is the day they were born. False for a child taken into the
 // record by hand or in a sweep, or adopted: born is then the day it was
-// recorded. mother, father: as recorded, by name; "" when unknown. Ask for it with
+// recorded. mother, father: as recorded, by name; "" when unknown. refId,
+// motherId, fatherId (1.10): reference form ids, unsigned, 0 when unrecorded;
+// fields are only ever added, so a caller ignores any it does not know. Ask for it with
 // SNKinship_RequestApi(2); a Kinship that predates it answers null, and the
 // caller can still ask for 1.
 struct SNKinship_API_V2 {
