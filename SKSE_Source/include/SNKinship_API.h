@@ -44,10 +44,12 @@ struct SNKinship_API_V1 {
 // same shape as ChildrenWith's, plus their parents:
 //
 //     [{ "name": "Lucia", "child": "daughter", "stage": 3, "adopted": false,
-//        "inWorld": true, "born": 214.5, "mother": "Ysolde",
+//        "inWorld": true, "born": 214.5, "bornKnown": true, "mother": "Ysolde",
 //        "father": "Haruk" }, ...]
 //
-// mother, father: as recorded, by name; "" when unknown. Ask for it with
+// bornKnown: born is the day they were born. False for a child taken into the
+// record by hand or in a sweep, or adopted: born is then the day it was
+// recorded. mother, father: as recorded, by name; "" when unknown. Ask for it with
 // SNKinship_RequestApi(2); a Kinship that predates it answers null, and the
 // caller can still ask for 1.
 struct SNKinship_API_V2 {

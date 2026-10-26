@@ -47,6 +47,13 @@ namespace Kinship::Store {
         // any package this mod could apply - and marks the row, because "this
         // one is not ours to move" is otherwise invisible.
         bool adopted = false;
+        // Taken into the record by hand or in a sweep (AddChildStatic,
+        // AdoptChild): `born` is then the day it was recorded, not the day
+        // the child was born. Births claimed at labour carry a source instead.
+        bool manual = false;
+        // Where the birth came from (SNKin_Bridge.SRC_*): 1 Fertility Mode,
+        // 2 Being Female, 3 adopted; 0 when the record predates the field.
+        int source = 0;
         // Where this child lives, copied out of SeverActions' co-save by the
         // Papyrus side - the panel cannot read that itself. Empty means no home
         // is recorded, which is the case worth showing rather than hiding.

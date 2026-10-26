@@ -73,6 +73,15 @@ namespace Kinship::Api {
                                     { "adopted", c.adopted },
                                     { "inWorld", c.hasBody },
                                     { "born", c.born },
+                                    // A real birth day, not the day a child
+                                    // already in the world was recorded: a
+                                    // birth claimed at labour (Fertility
+                                    // Mode or Being Female, or ours to
+                                    // raise). Records older than the source
+                                    // field are not trusted: 23 of the
+                                    // author's shared one day (163.1).
+                                    { "bornKnown", !c.manual && c.born > 0.0f &&
+                                                       (c.source == 1 || c.source == 2 || c.owned) },
                                     { "mother", c.motherName },
                                     { "father", c.fatherName } });
                 }
