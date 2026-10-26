@@ -39,3 +39,20 @@ struct SNKinship_API_V1 {
     // none or no record can be read.
     std::uint32_t (*ChildrenWith)(std::uint32_t a_parentFormId, char* a_out, std::uint32_t a_size);
 };
+
+// Version 2 (Kinship 1.10): V1, and every child of the player's, as JSON in the
+// same shape as ChildrenWith's, plus their parents:
+//
+//     [{ "name": "Lucia", "child": "daughter", "stage": 3, "adopted": false,
+//        "inWorld": true, "born": 214.5, "mother": "Ysolde",
+//        "father": "Haruk" }, ...]
+//
+// mother, father: as recorded, by name; "" when unknown. Ask for it with
+// SNKinship_RequestApi(2); a Kinship that predates it answers null, and the
+// caller can still ask for 1.
+struct SNKinship_API_V2 {
+    // 2.
+    std::uint32_t version;
+    std::uint32_t (*ChildrenWith)(std::uint32_t a_parentFormId, char* a_out, std::uint32_t a_size);
+    std::uint32_t (*AllChildren)(char* a_out, std::uint32_t a_size);
+};

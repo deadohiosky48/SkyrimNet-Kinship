@@ -50,6 +50,36 @@ namespace Kinship::Api {
             g_stamp = stamp;
         }
 
+        std::uint32_t Write(const nlohmann::json& a_out, char* a_buffer, std::uint32_t a_size) {
+            const auto text = a_out.dump(-1, ' ', true);
+            const auto need = static_cast<std::uint32_t>(text.size() + 1);
+            if (a_buffer && a_size >= need) {
+                std::memcpy(a_buffer, text.c_str(), need);
+            } else if (a_buffer && a_size > 0) {
+                a_buffer[0] = '\0';
+            }
+            return need;
+        }
+
+        std::uint32_t AllChildren(char* a_out, std::uint32_t a_size) {
+            auto out = nlohmann::json::array();
+            {
+                const std::scoped_lock lock{ g_lock };
+                Refresh();
+                for (const auto& c : g_children) {
+                    out.push_back({ { "name", c.name },
+                                    { "child", c.gender },
+                                    { "stage", c.stage },
+                                    { "adopted", c.adopted },
+                                    { "inWorld", c.hasBody },
+                                    { "born", c.born },
+                                    { "mother", c.motherName },
+                                    { "father", c.fatherName } });
+                }
+            }
+            return Write(out, a_out, a_size);
+        }
+
         std::uint32_t ChildrenWith(std::uint32_t a_parentFormId, char* a_out, std::uint32_t a_size) {
             auto out = nlohmann::json::array();
             if (a_parentFormId != 0) {
@@ -82,9 +112,12 @@ namespace Kinship::Api {
         }
 
         constexpr SNKinship_API_V1 kV1{ 1, ChildrenWith };
+        constexpr SNKinship_API_V2 kV2{ 2, ChildrenWith, AllChildren };
     }
 }
 
 extern "C" __declspec(dllexport) const void* SNKinship_RequestApi(std::uint32_t a_version) {
-    return a_version == 1 ? &Kinship::Api::kV1 : nullptr;
+    return a_version == 1 ? static_cast<const void*>(&Kinship::Api::kV1) :
+           a_version == 2 ? static_cast<const void*>(&Kinship::Api::kV2) :
+                            nullptr;
 }
