@@ -690,6 +690,7 @@ Function Sweep()
     StorageUtil.SetFloatValue(None, "SNKin_SweepLock", lockNow)
     _sweepingSince = lockNow
 
+    NoteStagesSwitch()
     SweepAt("MigrateStore")
     MigrateStore()
     ; AFTER the schema migration, which may already have swept, and before
@@ -734,6 +735,31 @@ Function Sweep()
     SweepAt("")
     _sweepingSince = 0.0
     StorageUtil.SetFloatValue(None, "SNKin_SweepLock", 0.0)
+EndFunction
+
+Function NoteStagesSwitch() Global
+    { Records WHEN life stages were switched on, as soon as they are on.
+
+      RefreshChildStage plants any child recorded before that moment at the
+      backfill stage, because its birth stamp is only when the record was made.
+      This moment used to be stamped lazily - on first contact with a stageless
+      child. On an existing roster that is fine. On a NEW GAME the first stageless
+      child is the first baby, so "switched on" became that baby's own birth
+      instant, the baby predated it, and it was planted straight at Child.
+
+      Stamped here on every sweep instead, which on a new game is long before any
+      birth. Cleared while stages are off, so switching them back on later plants
+      exactly the children recorded in between - what the setting promises. }
+    Float since = JsonUtil.GetFloatValue(StoreFile(), "stagesEnabledAt", 0.0)
+    If StagesEnabled()
+        If since <= 0.0
+            JsonUtil.SetFloatValue(StoreFile(), "stagesEnabledAt", Utility.GetCurrentGameTime())
+            JsonUtil.Save(StoreFile())
+        EndIf
+    ElseIf since > 0.0
+        JsonUtil.SetFloatValue(StoreFile(), "stagesEnabledAt", 0.0)
+        JsonUtil.Save(StoreFile())
+    EndIf
 EndFunction
 
 Function SweepAt(String asStep)
@@ -1143,6 +1169,7 @@ Function SeedPass()
         Return
     EndIf
 
+    Int seededNames = 0
     If !SeedExisting()
         Int i = 0
         While i < names.Length
@@ -1154,6 +1181,13 @@ Function SeedPass()
         Diag(LOG_INFO(), "Seeding disabled - existing children ignored, only future births tracked.")
     Else
         Diag(LOG_INFO(), "First sweep: seeding existing children with the player as father.")
+        Int j = 0
+        While j < names.Length
+            If names[j] != ""
+                seededNames += 1
+            EndIf
+            j += 1
+        EndWhile
     EndIf
 
     JsonUtil.SetIntValue(StoreFile(), "seeded", 1)
@@ -1164,7 +1198,15 @@ Function SeedPass()
     ; born at 163.13 are one seeding batch of unknown ages wearing a timestamp.
     ; Without this the two are indistinguishable and every seeded child has to
     ; be planted by hand.
-    JsonUtil.SetFloatValue(StoreFile(), "seedAt", Utility.GetCurrentGameTime())
+    ;
+    ; ONLY WHEN SOMETHING WAS SEEDED. The stamp opens a window that plants
+    ; everything recorded inside it. On a new game the list is empty - and with
+    ; Take Fertility Mode's Baby Item on it stays empty, so this pass could
+    ; first succeed right beside the first birth and plant that newborn at
+    ; Child. No batch, no window.
+    If seededNames > 0
+        JsonUtil.SetFloatValue(StoreFile(), "seedAt", Utility.GetCurrentGameTime())
+    EndIf
     JsonUtil.Save(StoreFile())
 EndFunction
 
@@ -3842,6 +3884,9 @@ Function ClaimFmrBirth(Actor akMother, String asFather, Int aiFatherId) Global
     If akMother == None
         Return
     EndIf
+    ; Before the record exists, so a birth arriving between switching stages on
+    ; and the next sweep still postdates the switch.
+    NoteStagesSwitch()
     Int grp = NextBirthGroup()
     String placeholder = "(unnamed " + grp + ")"
     JsonUtil.StringListAdd(StoreFile(), "roster", placeholder, False)
