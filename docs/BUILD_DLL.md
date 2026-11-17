@@ -70,9 +70,14 @@ None of this is installed on the development machine as of 2026-08-16.
    Address Library format 5, and SKSE there loads only plugins that declare
    support for it (`kVersionIndependentEx_AddressLibraryV5`, which CommonLib
    sets by default from that date). Releases 1.9.3 through 1.9.8 shipped a DLL
-   built against a 16 Aug checkout and fail to load on 1.7.104. 1.9.9 was built
-   against `4ed481641` (13 Oct 2026). `tools/check.ps1` verifies the flag in the
-   built DLL.
+   built against a 16 Aug checkout and fail to load on 1.7.104. 1.9.9 and 1.10.0
+   were built against `4ed481641` (13 Oct 2026). `tools/check.ps1` verifies the
+   flag in the built DLL.
+
+   **Licence.** CommonLibSSE-NG relicensed from MIT to GPL-3.0-or-later on
+   20 Aug 2026 (`cf24ab81c`), so every DLL built from a checkout this recent is a
+   GPL work. That is why `SKSE_Source/` is GPL (see `LICENSE` and `COPYING.txt`)
+   and why the packager ships `COPYING.txt` in every archive.
 
 `SKSEMenuFramework.h` is already vendored in `SKSE_Source/include/`. It is the
 framework's public integration header and is meant to be copied in — the

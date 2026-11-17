@@ -284,6 +284,10 @@ try {
     # not do is no longer obvious from convention - it has to travel with the
     # files rather than living only in a repository they may never visit.
     Copy-Item (Join-Path $repo 'LICENSE') $docOut
+    # The DLL is GPL-3 (CommonLibSSE-NG relicensed in Aug 2026), and the GPL
+    # requires its text to travel with every copy. Shipped unconditionally, so
+    # a package can never carry the DLL without it.
+    Copy-Item (Join-Path $repo 'COPYING.txt') $docOut
 
     # --- 5b. REFUSE TO SHIP THE BUILD MACHINE'S IDENTITY --------------------
     # Section 3c reads text files only, which is exactly how the first releases of

@@ -443,8 +443,13 @@ scripts, or write to SkyrimNet's SQLite database.
 ## License and permissions
 
 **Source-available, not open source** — see [LICENSE](LICENSE) for the full text.
-It covers **this mod's own code**: the `SNKin_*` Papyrus scripts, the SKSE panel
-under `SKSE_Source/src`, the `0340_kinship.prompt` submodule, and the tooling.
+It covers **this mod's own code**: the `SNKin_*` Papyrus scripts, the
+`0340_kinship.prompt` submodule, and the tooling.
+
+**The SKSE plugin is the exception.** `SkyrimNetKinship.dll` and its source under
+`SKSE_Source/` are **GPL-3.0-or-later** ([COPYING.txt](COPYING.txt)), because they
+are built against CommonLibSSE-NG, which is GPL-licensed. You may copy, modify and
+redistribute the plugin under the GPL; the terms below do not apply to it.
 
 Freely permitted, no need to ask: use it, modify your own copy, and publish
 patches, add-ons or translations that *require* this mod rather than containing

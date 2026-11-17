@@ -8,6 +8,9 @@ domain, and no general right to redistribute it is granted.
 The permissions below are granted to everyone, free of charge, and are not
 withdrawn from anyone who has already relied on them.
 
+ONE EXCEPTION: the SKSE plugin is GPL-3.0-or-later, not covered by these terms.
+See "THE SKSE PLUGIN" at the end of this file.
+
 
 WHAT YOU MAY DO WITHOUT ASKING
 
@@ -97,3 +100,27 @@ This covers this mod's own code and content only. It does not extend to
 SkyrimNet, Fertility Mode Reloaded, SkyUILib, SKSE Menu Framework, or any other
 mod this integrates with. None of them is redistributed here, and each keeps its
 own terms.
+
+
+THE SKSE PLUGIN
+
+The SKSE plugin - SkyrimNetKinship.dll and its source under SKSE_Source/ - is
+licensed under the GNU General Public License, version 3 or (at your option) any
+later version. The full text is in COPYING.txt, shipped beside this file.
+
+It is GPL because it is built against CommonLibSSE-NG, which is licensed
+GPL-3.0-or-later (with that project's Modding Exception and GPL-3.0 Linking
+Exception) from 20 Aug 2026. Releases 1.9.9 onwards are built against such a
+checkout; the exact commit is named in docs/BUILD_DLL.md. CommonLibSSE-NG's
+source is at https://github.com/alandtse/CommonLibSSE-NG.
+
+Everything in the sections above - including the restrictions on
+redistribution and commercial use - applies to the rest of this mod only: the
+Papyrus scripts, the plugin file, the prompts, the configuration and the
+tooling. Those are separate works that do not link to CommonLibSSE-NG. None of
+those restrictions applies to the SKSE plugin, which you may copy, modify and
+redistribute under the GPL.
+
+Complete corresponding source for every released build of the SKSE plugin is
+published at https://github.com/deadohiosky48/SkyrimNet-Kinship, tagged by
+release.
